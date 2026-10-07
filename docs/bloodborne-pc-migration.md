@@ -151,3 +151,33 @@ and a successful provider initialization, not merely a GPU name or DLL file.
 
 The first boot does not verify original loading icons/fades, gameplay,
 multiplayer, high-refresh pacing or temporal quality. Those gates remain open.
+
+### First player package and common upscaler
+
+Player bundle `12185d7` passed Windows runtime/Wine, WPF and package jobs in
+https://github.com/DarkIzuku/bbhost/actions/runs/37663336231.
+Its native/WPF integration was tested with the user's real dump: 35 native
+option cards, RTX 5070/617.14 detected, title menu reached, 240 flips, exit 0,
+launcher hidden during play and restored afterwards. Test config/saves/cache
+were separate from the user's game and original saves.
+
+`9d9b0e2` routes Native/FSR 1 through `UpscalerProvider`, preserving the
+existing native blit and EASU kernels. It adds real RCAS on/off/strength choices
+to the native options table, automatically visible in WPF and F10. The
+pure temporal policy covers size/provider/preset/resource/window resets,
+explicit engine invalidations, bounded jitter and motion-unit conversion.
+Engine scene hooks and temporal backends remain pending.
+
+Windows run 37664438469 and Linux run 37664438406 passed. Wine ran four
+host-side tests, including the temporal policy. Linux ctest reported 24
+tests, zero failures; asset-dependent skips remain expected. WPF ran 17
+checks. The combined artifact is 11502695533.
+
+Local real-runtime checks on `9d9b0e2` reached the title menu for 240 flips
+and exited 0: 1080p windowed, 720p windowed, and 720p render to 2560x1440
+fullscreen with FSR 1/RCAS off at 30 FPS, then RCAS on at 60 FPS. These are
+startup/presentation checks, not gameplay or frame-pacing benchmarks.
+The source SELF SHA-256 was rechecked afterwards and remained unchanged.
+
+Next priority is DLSS before FSR 3.1/4; see `dlss-integration.md` for verified
+NGX/runtime findings and the remaining scene/engine prerequisites.

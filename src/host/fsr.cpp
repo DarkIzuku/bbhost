@@ -51,6 +51,7 @@ struct Target {
 
 struct Fsr {
     bool tried = false, ok = false;
+    bool sharpening = true;
     bool half = false;  // the half-precision shaders (fsr_easu_h, fsr_rcas_h)
     VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
@@ -235,10 +236,16 @@ bool fsr_upscale_locked(VkCommandBuffer cmd, VkImage src, VkFormat src_format, s
     if (!g_fsr.tried) {
         g_fsr.tried = true;
         g_fsr.ok = fsr_init_locked();
-        host_log("present: upscaling by FSR 1 (EASU + RCAS%s%s) %s", g_fsr.half ? ", half precision" : "",
+        g_fsr.sharpening = sharpening;
+        host_log("present: upscaling by FSR 1 (EASU%s%s%s) %s", sharpening ? " + RCAS" : "",
+                 g_fsr.half ? ", half precision" : "",
                  dst_view ? ", into the swapchain image" : "", g_fsr.ok ? "ready" : "unavailable; bilinear");
     }
     if (!g_fsr.ok) return false;
+    if (g_fsr.sharpening != sharpening) {
+        g_fsr.sharpening = sharpening;
+        host_log("present: FSR 1 RCAS %s", sharpening ? "on" : "off");
+    }
     note_time();
     const std::uint32_t w = area.extent.width, h = area.extent.height;
     if (w != g_fsr.width || h != g_fsr.height) {

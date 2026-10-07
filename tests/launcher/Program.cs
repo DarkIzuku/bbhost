@@ -51,9 +51,55 @@ static class Program
         Thread.Sleep(600); Console.Out.WriteLine(new string('o', 80000)); Console.Error.WriteLine("fixture crash reason"); Thread.Sleep(200); return 3;
     }
     [STAThread] static int Main(string[] args) {
+        if (args.Length == 4 && args[0] == "integration") {
+            try { Integration(args[1], args[2], args[3]); return 0; } catch (Exception ex) { Console.Error.WriteLine(ex); return 1; }
+        }
         if (args.Any(x => x.StartsWith("--"))) return FakeHost(args);
         try { Run(args.Length > 0 ? args[0] : Path.Combine(Path.GetTempPath(), "bbhost-launcher-previews")); Console.WriteLine($"launcher checks: {checks} passed"); return 0; }
         catch (Exception ex) { Console.Error.WriteLine(ex); return 1; }
+    }
+    static void Integration(string runtime, string gameFolder, string testRoot) {
+        runtime = Path.GetFullPath(runtime); testRoot = Path.GetFullPath(testRoot);
+        // Opt-in local game check. All writable state is in the specified test
+        // root; the supplied game folder is only read by native preparation.
+        Environment.SetEnvironmentVariable("BBHOST_LAUNCHER_ROOT", runtime);
+        Environment.SetEnvironmentVariable("BBHOST_CONFIG_DIR", Path.Combine(testRoot, "config"));
+        Environment.SetEnvironmentVariable("BBHOST_EXIT_FLIP", "240");
+        Environment.SetEnvironmentVariable("BBHOST_DUMP_FRAME", "180,220");
+        Environment.SetEnvironmentVariable("BBHOST_NP_SIGNED_OUT", "1");
+        Environment.SetEnvironmentVariable("BBHOST_SKIP_INTRO", "1");
+        var config = new Dictionary<string, string> { ["paths.app0"] = TomlSettings.Quote(gameFolder), ["paths.data"] = TomlSettings.Quote(Path.Combine(testRoot, "data")), ["startup.skip_intro"] = "true" };
+        TomlSettings.Write(Path.Combine(testRoot, "config", "bbhost.toml"), config);
+        var app = new App(); app.InitializeComponent();
+        SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext(Dispatcher.CurrentDispatcher));
+        var window = new MainWindow { ShowInTaskbar = false, ShowActivated = false, WindowStartupLocation = WindowStartupLocation.Manual, Left = -20000, Top = -20000 };
+        window.Show(); Until(() => Find<Button>(window, "PlayButton").IsEnabled, "real native preparation and GPU query");
+        if (Environment.GetEnvironmentVariable("BBHOST_TEST_RES") is { } size) {
+            var resolution = Find<ComboBox>(window, "QuickResolution");
+            resolution.SelectedItem = size;
+            if (resolution.SelectedIndex < 0) throw new Exception("Unsupported test resolution.");
+        }
+        if (Environment.GetEnvironmentVariable("BBHOST_TEST_RCAS") is { } rcas) {
+            var field = typeof(MainWindow).GetField("state", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            var nativeState = (NativeState)field.GetValue(window)!;
+            nativeState.Options.First(x => x.Key == "upscale_rcas").Index = rcas == "0" ? 0 : 1;
+        }
+        if (Environment.GetEnvironmentVariable("BBHOST_TEST_FULLSCREEN") == "1") Find<ComboBox>(window, "QuickDisplay").SelectedIndex = 1;
+        if (Environment.GetEnvironmentVariable("BBHOST_TEST_FPS") is { } fps) Find<ComboBox>(window, "QuickFps").SelectedItem = fps;
+        Console.WriteLine(Find<TextBlock>(window, "GameVersionStatus").Text);
+        Console.WriteLine(Find<TextBlock>(window, "GpuStatus").Text);
+        Console.WriteLine("Native option cards: " + new[] { "GameOptions", "DisplayOptions", "GraphicsOptions", "UpscalingOptions", "ControlsOptions" }.Sum(x => Find<StackPanel>(window, x).Children.Count));
+        var nav = Find<StackPanel>(window, "Navigation").Children.OfType<Button>().First(x => (string)x.CommandParameter == "Graphics");
+        Call(window, "Nav_Click", nav, new RoutedEventArgs()); Directory.CreateDirectory(testRoot);
+        Render(window, Path.Combine(testRoot, "real-launcher-graphics.png"), 1500, 920);
+        Call(window, "Play_Click", window, new RoutedEventArgs()); Until(() => !window.IsVisible, "real game starts and launcher hides");
+        var deadline = DateTime.UtcNow.AddSeconds(60);
+        while (!window.IsVisible || !Find<Button>(window, "PlayButton").IsEnabled) { if (DateTime.UtcNow > deadline) throw new Exception("Real game did not exit at the requested flip count."); Pump(); Thread.Sleep(10); }
+        var logFile = Directory.GetFiles(Path.Combine(runtime, "logs"), "bbhost-*.log").OrderByDescending(File.GetLastWriteTimeUtc).First();
+        var log = File.ReadAllText(logFile);
+        Console.WriteLine("Launcher restored; log: " + logFile);
+        if (!log.Contains("Exit code: 0")) throw new Exception("Real runtime reported a failure; inspect " + logFile);
+        window.Close(); Console.WriteLine("real launcher/runtime integration: passed (240 flips, exit 0)");
     }
     static void Run(string preview) {
         Directory.CreateDirectory(preview);
