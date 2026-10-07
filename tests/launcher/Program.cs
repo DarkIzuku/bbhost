@@ -140,6 +140,13 @@ static class Program
         Find<ComboBox>(window, "QuickResolution").SelectedIndex = 1; Call(window, "SaveSettings");
         Check(TomlSettings.Read(options)["options.resolution"] == "2560x1440", "quick control writes bbhost settings");
         Check(File.ReadAllText(options).Contains("fixture-token-must-survive"), "WPF save preserves account");
+        Find<TextBox>(window, "CustomServerBox").Text = "http://192.0.2.15:31315";
+        Call(window, "ShadNetPage_Click", window, new RoutedEventArgs()); Call(window, "SaveSettings");
+        var profile = Directory.GetFiles(Path.Combine(root, "config", "profiles"), "bloodborne-offline.toml").Single();
+        Check(TomlSettings.Read(profile)["online.account_page"] == "http://192.0.2.15:31316/register", "integrated shadNet registration uses separate website listener and native TOML");
+        Check(TomlSettings.Read(profile)["online.offline"] == "true", "website link cannot enable incompatible game protocol");
+        Check(ServerLinks.ShadNetRegistration("https://[2001:db8::1]:31315").AbsoluteUri == "https://[2001:db8::1]:31316/register", "website link preserves IPv6 and explicit TLS scheme");
+        Throws(() => ServerLinks.ShadNetRegistration("https://user:password@example.com"), "website helper rejects embedded credentials");
         Render(window, Path.Combine(preview, "launcher-home.png"), 1500, 920);
         var nav = Find<StackPanel>(window, "Navigation");
         foreach (string page in new[] { "Game", "Graphics", "Online", "Upscaling" }) {

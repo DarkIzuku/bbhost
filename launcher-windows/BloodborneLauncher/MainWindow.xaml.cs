@@ -272,6 +272,12 @@ public partial class MainWindow : Window
     async void RecoverAccount_Click(object sender, RoutedEventArgs e) { await AccountAction("recover"); RecoveryCodeBox.Clear(); }
     async void SignOut_Click(object sender, RoutedEventArgs e) => await AccountAction("signout");
     void AccountPage_Changed(object sender, TextChangedEventArgs e) => Preference_Changed(sender, e);
+    void ShadNetPage_Click(object sender, RoutedEventArgs e) {
+        try {
+            AccountPageBox.Text = ServerLinks.ShadNetRegistration(CustomServerBox.Text).AbsoluteUri;
+            FooterMessage.Text = "Página integrada de shadNet preparada. Puedes editar el puerto o usar la URL de tu proxy; guarda las opciones.";
+        } catch (Exception ex) { Error(ex); }
+    }
     void AccountPage_Click(object sender, RoutedEventArgs e) {
         try {
             if (!Uri.TryCreate(AccountPageBox.Text.Trim(), UriKind.Absolute, out var uri) || (uri.Scheme != "https" && uri.Scheme != "http") || uri.UserInfo.Length > 0) throw new IOException("Configura la URL de la página de cuentas de tu servidor.");

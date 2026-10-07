@@ -5,7 +5,34 @@ Inspected read-only: `DarkIzuku/shadNet` main
 `codex/bloodborne-stats-experimental`
 `34ef2e4bab83d2f3c9d4c573f0ab9ab78c258e1b`. Neither was modified.
 
-## Current compatibility
+## Recovered integrated website source
+
+The user's website exists in local work that was not pushed to those two
+remote branches. Recovered read-only from the earlier 2026-08-21 workspace,
+`work/shadnet-online-features`, branch `bloodborne-bootstrap`, HEAD
+`115adf2f47e824b17698c7179e41213ca6e9e37a` plus uncommitted changes. The
+editable frontend is also present at `D:/CODEX/web`. Neither copy,
+its history, configuration, databases nor binaries was modified here.
+
+Provenance of the actual recovered working files (SHA-256):
+
+- `src/bloodborne_website.cpp`:
+  `1404a8da845fb40627521404fbed13eb4a7b70c9b248b74dd70aacf03266e11d`.
+- `documentation/bloodborne-website.md`:
+  `df14f48fc27c302db066d38c9949ff2d59bf9c49a39f22569e40222fc59ac51b`.
+- `src/webapi_routes_bloodborne_bootstrap.cpp`:
+  `e03c5c2a5a80f78d5b305c1446cc57588913ce7cef180244443b96c9efdb6c8f`.
+
+The Hunter's Requiem is a Qt HTTP listener inside the server process,
+normally on port 31316; the game WebAPI remains on 31315. It serves
+`/register`, `/login`, `/account`, and JSON `/api/register`, `/api/login`,
+`/api/account`. Registration calls the same `RegisterShadNetAccount`
+service as TCP account creation. The website uses an independent HttpOnly
+cookie and CSRF value: a web session is not a bbhost game token. The launcher
+can build the registration link from the user's server origin; its port,
+path and HTTPS proxy URL remain editable and persist in native TOML.
+
+## Current game compatibility
 
 Changing bbhost's server URL to shadNet does not implement multiplayer:
 
@@ -22,13 +49,15 @@ Changing bbhost's server URL to shadNet does not implement multiplayer:
 - shadNet's `/v1/users`, `/v1/sessions` and presence WebAPI is not this API;
   its Bearer token is resolved through its own database. `/status` is a
   service-status response, not an account-creation page.
-- Both checked branches contain JSON WebAPI/stats routes, no browser signup
-  page or bbhost `/auth/*` service. The user indicates a web signup is part of
-  their deployed server. Its deployed URL/source version is not yet known;
-  do not infer a login mechanism or request/send credentials to a guessed URL.
+- The two published branches contain no browser signup page. The recovered
+  local source above DOES contain it, as the user described. It still has no
+  bbhost `/auth/*` account service or JSON `/mp/matching2/*` contract. Its
+  Bloodborne bootstrap/world-data extensions do not implement that contract.
+  Do not submit game credentials to the independent web-cookie endpoints.
 
 The launcher provides Offline and custom native server profiles, plus an
-explicit account-page URL. shadNet is not advertised as a working preset.
+explicit account-page URL and a link helper for shadNet's integrated website.
+shadNet is not advertised as a working game/multiplayer preset yet.
 Discord is disabled. Account creation in this frontend opens the configured
 page, never a local shadNet client registration command.
 
