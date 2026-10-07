@@ -254,7 +254,7 @@ void patch_manifests_apply(ElfImage* image) {
             host_log("patch: %s: %s", path.c_str(), err.c_str());
             continue;
         }
-        if (m.eboot != image->sha256) {
+        if (!eboot_hashes_compatible(m.eboot, image->sha256)) {
             host_log("patch: %s skipped: for eboot %.12s..., this is %.12s...", m.name.c_str(), m.eboot.c_str(),
                      image->sha256.c_str());
             continue;

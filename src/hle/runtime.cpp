@@ -325,11 +325,11 @@ void hle_guest_pool_report() {
 
 void hle_patch_guest(ElfImage* image) {
     engine_bind(image);
-    if (image->sha256 == kEboot109Sha256) {
+    if (eboot_is_109(image->sha256)) {
         g_known_size.store(image->mem.size, std::memory_order_relaxed);
         g_known_slide.store(image->mem.slide, std::memory_order_relaxed);
     }
-    if (image->sha256 != kEboot109Sha256) {
+    if (!eboot_is_109(image->sha256)) {
         host_log("eboot is not the known 1.09 build (sha256 %s); guest patches skipped",
                  image->sha256.c_str());
         return;

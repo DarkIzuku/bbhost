@@ -247,7 +247,7 @@ void rebirth_install(ElfImage* image) {
         host_log("rebirth: off (PC enhancements: Rebirth at the Altar)");
         return;
     }
-    if (!image || image->sha256 != kEboot109Sha256) {
+    if (!image || !eboot_is_109(image->sha256)) {
         host_log("rebirth: off - not the 1.09 eboot");
         return;
     }

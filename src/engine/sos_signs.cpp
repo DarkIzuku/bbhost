@@ -16,7 +16,7 @@ constexpr float kGameTimeout = 180.0f;
 
 void sos_signs_install(ElfImage* image) {
     const int seconds = config().sign_timeout_seconds;
-    if (!image || image->sha256 != kEboot109Sha256 || seconds <= 0 || seconds == 180) return;
+    if (!image || !eboot_is_109(image->sha256) || seconds <= 0 || seconds == 180) return;
     GuestMemory& mem = image->mem;
     const std::uint64_t at = mem.slide + (kSignTimeout - kPreferredGuestSlide);
     auto* p = static_cast<float*>(guest_ptr(mem, at));

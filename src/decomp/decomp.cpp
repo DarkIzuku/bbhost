@@ -100,7 +100,7 @@ bool decomp_comparing() { return g_comparing; }
 std::uint64_t decomp_guest(std::uint64_t bn) { return g_slide + (bn - kPreferredGuestSlide); }
 
 void decomp_install(ElfImage* image) {
-    if (!image || image->sha256 != kEboot109Sha256 || g_added.empty()) return;
+    if (!image || !eboot_is_109(image->sha256) || g_added.empty()) return;
     g_slide = image->mem.slide;
     if (const char* e = std::getenv("BBHOST_DECOMP"); e && e[0] == '0') {
         host_log("decomp: off (BBHOST_DECOMP=0): the game's own code for all %zu functions", g_added.size());

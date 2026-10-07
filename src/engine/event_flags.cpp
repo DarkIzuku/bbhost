@@ -42,7 +42,7 @@ std::uint64_t manager() {
 
 void event_flags_install(ElfImage* image) {
     g_slide = image->mem.slide;
-    g_ok = image->sha256 == kEboot109Sha256;
+    g_ok = eboot_is_109(image->sha256);
     if (const char* e = std::getenv("BBHOST_EVENT_FLAG_LOG"); g_ok && e && e[0] == '1') {
         g_log = true;
         event_flag_watch(true);

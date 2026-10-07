@@ -50,7 +50,7 @@ bool plausible(std::uint64_t p) { return p > 0x10000; }
 
 void summon_invite_install(ElfImage* image) {
     g_slide = 0;
-    if (!image || image->sha256 != kEboot109Sha256) return;
+    if (!image || !eboot_is_109(image->sha256)) return;
     // Off unless asked (2026-09-22): the host's game builds the type-1 item
     // itself - its sessionData is the session blob sub_1090b00 writes, not
     // the bare ConnectionArea - and sends it over its P2P socket once the

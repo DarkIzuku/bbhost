@@ -29,7 +29,7 @@ std::uint64_t guest_of(std::uint64_t bn) { return g_slide + (bn - kPreferredGues
 
 void lua_events_install(ElfImage* image) {
     g_slide = image->mem.slide;
-    g_ok = image->sha256 == kEboot109Sha256;
+    g_ok = eboot_is_109(image->sha256);
 }
 
 bool lua_event_queue(const char* name) {

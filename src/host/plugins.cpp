@@ -126,7 +126,7 @@ int api_register_hle(const char* name, void* fn) {
 }
 
 const char* api_eboot_sha256() { return g_image ? g_image->sha256.c_str() : ""; }
-int api_eboot_is_109() { return g_image && g_image->sha256 == kEboot109Sha256; }
+int api_eboot_is_109() { return g_image && g_eboot_is_109(image->sha256); }
 
 // A Binary Ninja address inside the image, else (above the image's own
 // range) a runtime address as given.

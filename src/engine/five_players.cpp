@@ -51,7 +51,7 @@ void five_players_install(ElfImage* image) {
         host_log("five players: off (PC enhancements: Five players)");
         return;
     }
-    if (!image || image->sha256 != kEboot109Sha256) {
+    if (!image || !eboot_is_109(image->sha256)) {
         host_log("five players: off - not the 1.09 eboot");
         return;
     }

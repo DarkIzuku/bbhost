@@ -36,7 +36,7 @@ void engine_bind(ElfImage* image) {
         g_image = nullptr;
         return;
     }
-    if (image->sha256 != kEboot109Sha256) {
+    if (!eboot_is_109(image->sha256)) {
         host_log("engine: eboot is not 1.09; named layouts skipped");
         g_image = nullptr;
         return;

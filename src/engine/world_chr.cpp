@@ -39,7 +39,7 @@ bool finite3(const float v[3]) { return std::isfinite(v[0]) && std::isfinite(v[1
 
 void world_chr_install(ElfImage* image) {
     g_slide = image->mem.slide;
-    g_ok = image->sha256 == kEboot109Sha256;
+    g_ok = eboot_is_109(image->sha256);
     if (const char* e = std::getenv("BBHOST_TEST_WARP"); e && e[0] == '1') {
         g_warp_enabled = true;
         host_log("world: BBHOST_TEST_WARP=1 - plugins may move the player (a test switch)");

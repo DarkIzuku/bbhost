@@ -66,7 +66,7 @@ const Stat* find(const char* name) {
 
 void player_data_install(ElfImage* image) {
     g_slide = image->mem.slide;
-    g_ok = image->sha256 == kEboot109Sha256;
+    g_ok = eboot_is_109(image->sha256);
 }
 
 bool player_stat_get(const char* name, std::int64_t* value) {

@@ -60,7 +60,7 @@ int menu_steps_watch(std::uint64_t type, const char16_t* name) {
 bool menu_steps_install(ElfImage* image) {
     if (g_installed >= 0) return g_installed == 1;
     g_installed = 0;
-    if (!image || image->sha256 != kEboot109Sha256) return false;
+    if (!image || !eboot_is_109(image->sha256)) return false;
     const std::uint64_t at = image->mem.slide + (kStepCtor - kPreferredGuestSlide);
     if (engine_prologue_hook(image, at, kStepPrologue, sizeof(kStepPrologue), reinterpret_cast<void*>(&step_hook))) g_installed = 1;
     else host_log("menu steps: the step constructor is not as expected; menus are not watched");

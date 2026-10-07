@@ -42,6 +42,7 @@ add_executable(bbhost
   src/core/memory.cpp
   src/core/write_watch.cpp
   src/core/elf.cpp
+  src/core/game_installation.cpp
   src/core/imports.cpp
   src/core/thunk.cpp
   src/core/portable.cpp
@@ -290,6 +291,9 @@ endif()
 
 if(UNIX)
   enable_testing()
+  add_executable(game_installation_test tests/game_installation_test.cpp src/core/game_installation.cpp src/core/sfo.cpp src/core/sha256.cpp)
+  target_include_directories(game_installation_test PRIVATE src)
+  add_test(NAME game_installation_test COMMAND game_installation_test)
   find_package(Python3 COMPONENTS Interpreter QUIET)
   if(Python3_Interpreter_FOUND)
     add_test(NAME world_baseline_test COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/world_baseline_test.py)

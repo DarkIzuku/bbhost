@@ -170,7 +170,7 @@ void change_appearance_install(ElfImage* image) {
         host_log("change appearance: off (PC enhancements: Hunter's Dream mirror)");
         return;
     }
-    if (!image || image->sha256 != kEboot109Sha256) {
+    if (!image || !eboot_is_109(image->sha256)) {
         host_log("change appearance: off - not the 1.09 eboot");
         return;
     }

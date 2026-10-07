@@ -380,7 +380,7 @@ void np_test_install(ElfImage* image) {
     const char* lvl = std::getenv("BBHOST_TEST_LEVEL");
     if ((!e || !e[0]) && (!ins || !ins[0]) && (!lvl || !lvl[0])) return;
     if (!e || !e[0]) e = "none";  // Insight only, no event
-    if (!image || image->sha256 != kEboot109Sha256) {
+    if (!image || !eboot_is_109(image->sha256)) {
         host_log("np test: not the 1.09 build; ignored");
         return;
     }
