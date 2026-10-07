@@ -93,7 +93,11 @@ void config_set_skip_intro(bool on);
 //   2 - an older setup window wrote startup.setup_window = false whenever it
 //       saved, its default then, so that value is set aside (this build's
 //       default stands) until the file is saved again.
-constexpr int kUserConfigVersion = 2;
+//   3 - the live server (thehuntersdream.com) takes only https and signed-in
+//       players; a file that still has the old plain-http settings for it is
+//       rewritten with the new ones (scheme, verify_tls, require_account,
+//       auth_server).
+constexpr int kUserConfigVersion = 3;
 // The PC enhancements, the same way: the options file's choices (F10, the
 // System menu's PC Enhancements, the setup window's tab) once it is read. A
 // BBHOST_CHANGE_APPEARANCE, BBHOST_REBIRTH or BBHOST_FIVE_PLAYERS of 0 or 1

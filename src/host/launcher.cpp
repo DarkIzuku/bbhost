@@ -36,9 +36,10 @@ struct Server {
     bool verify_tls, require_account;
     const char* auth_server;  // where /auth/* goes ("": the NP server's origin)
 };
+// Both take only https and signed-in players; the playtest server as the
+// playtest kit's bbhost-playtest.toml has it.
 constexpr Server kServers[] = {
-    {"Live server (thehuntersdream.com)", "thehuntersdream.com", "http", false, false, ""},
-    // As the playtest kit's bbhost-playtest.toml has it.
+    {"Live server (thehuntersdream.com)", "thehuntersdream.com", "https", true, true, "https://thehuntersdream.com"},
     {"Playtest server (dev.thehuntersdream.com)", "dev.thehuntersdream.com", "https", true, true, "https://dev.thehuntersdream.com"},
 };
 

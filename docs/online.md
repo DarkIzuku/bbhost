@@ -12,13 +12,20 @@ PS4 cross-play is not a goal: bbhost players meet only other bbhost players.
 ## Connecting
 
 The setup window chooses the server (the public one, a playtest server, or
-your own) and links an account. In `bbhost.toml`:
+your own) and links an account. In `bbhost.toml`, the public server's
+settings, which are the defaults:
 
 ```toml
 [online]
 host = "thehuntersdream.com"   # replaces FromSoftware's hosts in the game's requests
+scheme = "https"               # the public server takes only https
+verify_tls = true              # and its certificate is checked
 require_account = true         # stay offline until this PC is signed in
+auth_server = "https://thehuntersdream.com"   # where the account calls go
 ```
+
+A configuration written by an older bbhost that still sends the public server
+plain http is updated to these settings at the next start.
 
 Accounts have no passwords: a PC is linked to an account (with Discord, or
 with an account held by that PC plus a recovery code), and the account's name

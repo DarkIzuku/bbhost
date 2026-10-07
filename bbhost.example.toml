@@ -15,20 +15,23 @@ data = "./data"
 
 [online]
 host = "thehuntersdream.com"
-scheme = "http"
-verify_tls = false
+# The live server takes only https, and its certificate is checked. A server
+# on your own network may speak plain http ("http", verify_tls = false).
+scheme = "https"
+verify_tls = true
 online_id = "Hunter"
 # The STUN server the P2P port asks for the address the world sees it at
 # (players behind NAT). Default: the private server's host on 3478; "off"
 # never asks.
 # stun_server = "thehuntersdream.com:3478"
 # true: the game is signed out until this PC is signed in on the F10
-# screen (Account section), and the account's name is the online id.
-require_account = false
+# screen (Account section), and the account's name is the online id. The
+# live server plays only with signed-in players.
+require_account = true
 # Where the account calls (/auth/device/..., /auth/account/create) go. Tokens
 # and recovery codes travel here, so in production this is the server's https
-# origin; the default is np_server, fine on a LAN.
-# auth_server = "https://thehuntersdream.com"
+# origin; without it they go to np_server, fine on a LAN.
+auth_server = "https://thehuntersdream.com"
 # How often, in seconds, the game sends its play log to the server - the
 # site's map, deaths and profiles come from it. The game's own is 300 (and
 # what is left at quitting is lost); 0 keeps that. An upload is a few KB and

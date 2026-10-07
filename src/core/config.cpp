@@ -86,6 +86,15 @@ bool parse_file(const std::string& path, std::map<std::string, std::string>* kv,
             if (hash != std::string::npos) {
                 val = trim(val.substr(0, hash));
             }
+        } else if (!val.empty()) {
+            // After a quoted value too: upgrade_user_config's notes
+            // (host = "x"  # added by bbhost ...) are not part of it. A
+            // backslash is no escape here, so the next quote closes it.
+            const std::size_t close = val.find(val[0], 1);
+            if (close != std::string::npos) {
+                const std::string rest = trim(val.substr(close + 1));
+                if (!rest.empty() && rest[0] == '#') val = val.substr(0, close + 1);
+            }
         }
         (*kv)[section.empty() ? key : section + "." + key] = val;
     }
@@ -340,7 +349,9 @@ struct KeySpec {
 };
 constexpr KeySpec kUserKeys[] = {
     {"online", "host", "\"thehuntersdream.com\"", "the private server the game's online traffic goes to"},
-    {"online", "scheme", "\"http\"", "http or https for that server"},
+    // https for the live server; a file naming another server gets http, the
+    // value it would have got before.
+    {"online", "scheme", "\"https\"", "http or https for that server"},
 };
 
 // Adds what kUserKeys says is missing to the file, each under its section,
@@ -361,7 +372,10 @@ void upgrade_user_config(const std::string& path) {
     for (const KeySpec& k : kUserKeys) {
         const std::string full = std::string(k.section) + "." + k.key;
         if (kv.count(full)) continue;
-        const std::string entry = std::string(k.key) + " = " + k.value + "  # added by bbhost " BBHOST_CONFIG_VERSION ": " + k.note;
+        const char* value = k.value;
+        if (full == "online.scheme" && kv.count("online.host") && unquote(kv["online.host"]) != "thehuntersdream.com")
+            value = "\"http\"";
+        const std::string entry = std::string(k.key) + " = " + value + "  # added by bbhost " BBHOST_CONFIG_VERSION ": " + k.note;
         // The end of the section's block: before the next [header], else the file's end.
         std::size_t at = lines.size();
         bool found = false;
@@ -382,12 +396,53 @@ void upgrade_user_config(const std::string& path) {
             at = lines.size();
         }
         lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(at), entry);
-        host_log("config: %s had no %s; added %s = %s", path.c_str(), full.c_str(), full.c_str(), k.value);
+        host_log("config: %s had no %s; added %s = %s", path.c_str(), full.c_str(), full.c_str(), value);
         changed = true;
     }
     if (!changed) return;
     std::ofstream out(path, std::ios::trunc);
     for (const std::string& l : lines) out << l << "\n";
+}
+
+// The live server takes only https and signed-in players, as the playtest
+// server does. A user config from before that (below config_version 3) that
+// still names it with the old settings - plain http, no certificate check,
+// no account - gets the new ones written into it, so the file shows what is
+// in effect.
+void move_live_server_to_https(const std::string& path) {
+    std::map<std::string, std::string> kv;
+    std::string err;
+    if (!parse_file(path, &kv, &err)) return;
+    const auto get = [&](const std::string& k) {
+        auto it = kv.find(k);
+        return it == kv.end() ? std::string() : unquote(it->second);
+    };
+    const std::string ver = get("bbhost.config_version");
+    if ((ver.empty() ? 1 : std::atoi(ver.c_str())) >= 3 || get("online.host") != "thehuntersdream.com") return;
+    struct Want {
+        const char* key;
+        const char* value;
+    };
+    constexpr Want kLive[] = {
+        {"scheme", "\"https\""},
+        {"verify_tls", "true"},
+        {"require_account", "true"},
+        {"auth_server", "\"https://thehuntersdream.com\""},
+    };
+    std::vector<ConfigEdit> edits;
+    std::string keys;
+    for (const Want& w : kLive) {
+        if (get(std::string("online.") + w.key) == unquote(w.value)) continue;
+        edits.push_back({"online", w.key, w.value});
+        keys += (keys.empty() ? "" : ", ") + std::string(w.key);
+    }
+    if (edits.empty()) return;
+    if (!config_set_values(path, edits)) {
+        host_log("config: could not update %s for the live server's https settings", path.c_str());
+        return;
+    }
+    host_log("config: %s: the live server takes https and signed-in players now; set to its values: %s", path.c_str(),
+             keys.c_str());
 }
 
 // A bbhost.toml from before the per-user config (beside an older package's
@@ -514,7 +569,10 @@ bool config_load(int argc, char** argv, HostConfig* out, std::string* error) {
         if (is_relative_path(abs) && !cwd.empty()) abs = cwd + "/" + abs;
         import_legacy(abs, user_cfg, true);
     }
-    if (file_exists(user_cfg)) upgrade_user_config(user_cfg);
+    if (file_exists(user_cfg)) {
+        upgrade_user_config(user_cfg);
+        move_live_server_to_https(user_cfg);
+    }
     std::map<std::string, std::string> merged;
     std::string layers;
     for (const std::string& f : {file_exists(user_cfg) ? user_cfg : std::string(), local_cfg, explicit_cfg}) {
@@ -775,17 +833,20 @@ bool config_write_template(const std::string& path) {
            "\n[online]\n"
            "# Hostname that replaces the official *.scej-network.jp servers.\n"
            "host = \"thehuntersdream.com\"\n"
-           "# Force this scheme for those hosts (the private server speaks plain http).\n"
-           "scheme = \"http\"\n"
-           "verify_tls = false\n"
+           "# Force this scheme for those hosts. The live server takes only https; a\n"
+           "# server on your own network may speak plain http.\n"
+           "scheme = \"https\"\n"
+           "# Check the server's certificate.\n"
+           "verify_tls = true\n"
            "online_id = \"Hunter\"\n"
            "# true: the game is signed out until this PC is signed in on the F10\n"
            "# screen (Account section), and the account's name is the online id.\n"
-           "require_account = false\n"
+           "# The live server plays only with signed-in players.\n"
+           "require_account = true\n"
            "# Where the account calls (/auth/device/..., /auth/account/create) go. Tokens\n"
            "# and recovery codes travel here, so in production this is the server's https\n"
-           "# origin; the default is np_server, fine on a LAN.\n"
-           "# auth_server = \"https://thehuntersdream.com\"\n"
+           "# origin; without it they go to np_server, fine on a LAN.\n"
+           "auth_server = \"https://thehuntersdream.com\"\n"
            "# The host's own calls (rooms, events) go to this API base. Default:\n"
            "# <scheme>://<host>:18671, the same server as the game's own traffic.\n"
            "# np_server = \"http://127.0.0.1:18671\"\n"
