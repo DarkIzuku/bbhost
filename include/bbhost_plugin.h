@@ -35,7 +35,7 @@
 extern "C" {
 #endif
 
-#define BB_PLUGIN_API_VERSION 10
+#define BB_PLUGIN_API_VERSION 11
 
 #if defined(_WIN32)
 #define BB_PLUGIN_EXPORT __declspec(dllexport)
@@ -154,6 +154,13 @@ typedef struct BbOption {
     double min, max;      /* INT / FLOAT range */
     const char* choices;  /* CHOICE: "a|b|c" */
 } BbOption;
+
+/* Version 11: a string of the game's and what to show in its place
+ * (replace_text). */
+typedef struct BbText {
+    uint64_t bn_addr;      /* the game's UTF-16 string, by its Binary Ninja address */
+    const uint16_t* text;  /* UTF-16, ended by a 0 */
+} BbText;
 
 typedef struct BbHostApi {
     uint32_t version; /* BB_PLUGIN_API_VERSION */
@@ -356,6 +363,16 @@ typedef struct BbHostApi {
      * players' worlds (on_world_rules) and must change nothing of the
      * player's own - no params, no layouts, no set_rules. */
     int (*visitor)(const char* name);
+
+    /* Version 11: the game's own text. */
+    /* Every reference to each string - the lea instructions that load its
+     * address, the pointers to it in the image's data - names a copy of the
+     * new text instead (the host keeps it); the string itself stays as it
+     * was. For the 1.09 image's read-only UTF-16 strings, by Binary Ninja
+     * address; from bb_plugin_image only, before the game runs. The number of
+     * references moved, or -1 outside the image phase or for another eboot.
+     * A string the code reaches some other way keeps its text. */
+    int (*replace_text)(const BbText* texts, size_t count);
 } BbHostApi;
 
 #ifdef __cplusplus

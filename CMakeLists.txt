@@ -51,6 +51,7 @@ add_executable(bbhost
   src/host/plugins.cpp
   src/core/tls_rewrite.cpp
   src/core/config.cpp
+  src/engine/image_text.cpp
   src/core/sha256.cpp
   src/core/sfo.cpp
   src/engine/guest.cpp
@@ -192,6 +193,11 @@ file(READ ${CMAKE_SOURCE_DIR}/plugins/debug_menu/font14.bin BB_FONT14_HEX HEX)
 string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," BB_FONT14_BYTES "${BB_FONT14_HEX}")
 file(WRITE ${CMAKE_BINARY_DIR}/gen/debug_font14.inc.new "${BB_FONT14_BYTES}\n")
 configure_file(${CMAKE_BINARY_DIR}/gen/debug_font14.inc.new ${CMAKE_BINARY_DIR}/gen/debug_font14.inc COPYONLY)
+# ... and its English (plugins/debug_menu/strings_en.tsv) as a string.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/plugins/debug_menu/strings_en.tsv)
+file(READ ${CMAKE_SOURCE_DIR}/plugins/debug_menu/strings_en.tsv BB_DEBUG_MENU_EN)
+file(WRITE ${CMAKE_BINARY_DIR}/gen/debug_menu_strings_en.inc.new "R\"tsv(${BB_DEBUG_MENU_EN})tsv\"\n")
+configure_file(${CMAKE_BINARY_DIR}/gen/debug_menu_strings_en.inc.new ${CMAKE_BINARY_DIR}/gen/debug_menu_strings_en.inc COPYONLY)
 bb_plugin(debug_menu plugins/debug_menu/debug_menu.cpp)
 target_include_directories(bb_plugin_debug_menu PRIVATE ${CMAKE_BINARY_DIR}/gen)
 
@@ -303,6 +309,10 @@ if(UNIX)
   find_package(Python3 COMPONENTS Interpreter QUIET)
   if(Python3_Interpreter_FOUND)
     add_test(NAME world_baseline_test COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/world_baseline_test.py)
+    # The Debug Menu plugin's English against the 1.09 eboot: skipped without
+    # one (BBHOST_EBOOT, or eboot-109-decrypted.bin in the checkout).
+    add_test(NAME debug_menu_strings_test COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/debug_menu_strings.py check)
+    set_tests_properties(debug_menu_strings_test PROPERTIES SKIP_RETURN_CODE 77)
   endif()
   add_executable(thunk_args tests/thunk_args.cpp src/core/thunk.cpp src/core/tls_rewrite.cpp src/core/portable.cpp src/hle/sysv_va.cpp src/host/main_wait.cpp)
   target_include_directories(thunk_args PRIVATE src)

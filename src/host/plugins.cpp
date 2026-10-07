@@ -9,6 +9,7 @@
 #include "engine/addr.h"
 #include "engine/frame_rate.h"
 #include "engine/graphics_patch.h"
+#include "engine/image_text.h"
 #include "decomp/sprj_event_flag_man.h"
 #include "gcn/container.h"
 #include "engine/event_flags.h"
@@ -62,6 +63,7 @@ struct Plugin {
 std::vector<Plugin> g_plugins;
 ElfImage* g_image = nullptr;
 bool g_early = true;  // register_hle allowed
+bool g_in_image = false;  // the plugins' image phase: replace_text allowed
 std::string g_config_value;
 
 struct Hook {
@@ -154,6 +156,24 @@ int api_write(std::uint64_t bn, const void* data, std::size_t n) {
     if (!guest_protect_rw(&mem, lo, hi - lo)) return 2;
     std::memcpy(guest_ptr(mem, at), data, n);
     return 0;
+}
+
+// Version 11 (engine/image_text.h).
+int api_replace_text(const BbText* texts, std::size_t count) {
+    if (!g_in_image || !g_image || !api_eboot_is_109() || (!texts && count)) return -1;
+    std::vector<ImageText> items;
+    items.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        if (texts[i].bn_addr < kPreferredGuestSlide || !texts[i].text) continue;
+        ImageText t;
+        t.at = texts[i].bn_addr - kPreferredGuestSlide;
+        for (const std::uint16_t* c = texts[i].text; *c && t.text.size() < 4096; ++c) t.text.push_back(static_cast<char16_t>(*c));
+        items.push_back(std::move(t));
+    }
+    const ImageTextResult r = image_replace_text(g_image, items.data(), items.size());
+    host_log("plugin: text: %zu strings replaced (%zu instructions, %zu pointers); %zu named by nothing found, %zu refused",
+             r.strings, r.leas, r.pointers, r.unreferenced, r.rejected + (count - items.size()));
+    return static_cast<int>(r.leas + r.pointers);
 }
 
 int api_patch(std::uint64_t bn, const void* expect, const void* bytes, std::size_t n) {
@@ -769,6 +789,7 @@ const BbHostApi g_api = {
     &api_sp_effect_apply, &api_sp_effect_has, &api_plugin_dir, &api_show_message, &api_set_time_scale,
     &api_on_option, &api_on_action, &api_game_file, &api_overlay_file,
     &api_set_rules, &api_on_world_rules, &api_visitor,
+    &api_replace_text,
 };
 
 std::string read_file(const std::string& path) {
@@ -967,6 +988,7 @@ void plugins_image(ElfImage* image) {
         if (api_hook2(0x18094e0, loaded, sizeof(loaded), &layout_loaded_hook, nullptr) != 0)
             host_log("plugin: the layout parse hook did not go in: a summons keeps the resident map's enemies");
     }
+    g_in_image = true;
     for (std::size_t i = 0; i < g_plugins.size();) {
         Plugin& p = g_plugins[i];
         if (p.image) {
@@ -980,6 +1002,7 @@ void plugins_image(ElfImage* image) {
         }
         ++i;
     }
+    g_in_image = false;
 }
 
 void plugins_frame() {

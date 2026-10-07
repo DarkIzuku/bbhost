@@ -155,7 +155,12 @@ bool load_orbis_elf(const char* path, ElfImage* image) {
         return false;
     }
 
-    const std::size_t span = static_cast<std::size_t>((max_va + 0xfff) & ~0xfffull);
+    // The image and its tail (core/elf.h): 4 MiB for text that replaces the
+    // game's own, reachable from every rip-relative instruction.
+    constexpr std::uint64_t kTail = 4ull << 20;
+    image->tail_va = (max_va + 0xfff) & ~0xfffull;
+    image->tail_size = kTail;
+    const std::size_t span = static_cast<std::size_t>(image->tail_va + kTail);
     // BBHOST_SLIDE=0x...: load at another slide (what a Windows boot does when
     // 0x400000 is taken), to prove the address-based patches on Linux.
     std::uint64_t slide = kPreferredSlide;
@@ -168,6 +173,7 @@ bool load_orbis_elf(const char* path, ElfImage* image) {
         if (ph[i].p_type != PT_LOAD) {
             continue;
         }
+        image->segments.push_back({ph[i].p_vaddr, ph[i].p_filesz, ph[i].p_memsz, ph[i].p_flags});
         void* dest = guest_ptr(image->mem, image->mem.slide + ph[i].p_vaddr);
         if (ph[i].p_filesz) {
             std::memcpy(dest, file.data() + ph[i].p_offset, ph[i].p_filesz);
@@ -237,6 +243,8 @@ bool load_orbis_elf(const char* path, ElfImage* image) {
                 guest_ptr(image->mem, image->mem.slide + r.r_offset));
             if (type == R_X86_64_RELATIVE) {
                 *slot = image->mem.slide + static_cast<std::uint64_t>(r.r_addend);
+                if (r.r_offset < 0x100000000ull && r.r_addend >= 0 && r.r_addend < 0x100000000ll)
+                    image->relative.push_back({static_cast<std::uint32_t>(r.r_offset), static_cast<std::uint32_t>(r.r_addend)});
                 ++relative;
             } else if (type == R_X86_64_64) {
                 std::uint64_t symval = 0;

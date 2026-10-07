@@ -127,8 +127,15 @@ Menu** plugin restores it (the community's "Restore Debug Menu" patch by
 Whitehawkx and auser1337): turn it on in the setup window's Plugins tab and
 start the game again. The `` ` `` key then opens and closes the menu (Key
 Bindings can move it). While it is open the character stands still; the arrows
-move, Enter opens an entry and Backspace goes back. Its text is the developers'
-Japanese.
+move, Enter opens an entry and Backspace goes back. Its text is in English; the
+plugin's **Menu text** setting brings back the developers' Japanese.
+
+The English is `plugins/debug_menu/strings_en.tsv`: each string's address in the
+1.09 eboot, a hash of the game's text there, and the English - no game text.
+`tools/debug_menu_strings.py list` shows the Japanese beside it from your own
+eboot, `missing` what has no English yet, and `check` tests every row (the
+hash, the printf conversions, the font). Corrections are welcome as pull
+requests.
 
 The menu draws with a debug font the game does not ship. The plugin makes one
 from the public-domain X11 fonts k14 and 7x14, so nothing has to be
