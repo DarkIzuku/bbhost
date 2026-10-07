@@ -30,12 +30,15 @@ jobs:
         run: CI_PACMAN=1 tools/ci_windows.sh
       - name: Test Windows ABI under Wine
         run: tools/win_tests.sh
+      - name: Record exact build provenance
+        run: python tools/write_build_info.py build/win/build-info.json
       - uses: actions/upload-artifact@v4
         with:
           name: bbhost-windows-${{ github.sha }}
           path: |
             build/win/*.zip
             build/win/*.debug.exe
+            build/win/build-info.json
           if-no-files-found: error
       - name: Preserve diagnostics
         if: always()
@@ -46,3 +49,46 @@ jobs:
             build/win-deps/*.log
             build-win.*.log
           if-no-files-found: ignore
+  launcher:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Test WPF settings, saves, logging and process supervision
+        run: dotnet run --project tests/launcher/LauncherChecks.csproj -c Release -- build/launcher-previews
+      - name: Publish self-contained Windows launcher
+        run: dotnet publish launcher-windows/BloodborneLauncher/BloodborneLauncher.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o build/launcher
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wpf-launcher-${{ github.sha }}
+          path: build/launcher/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: launcher-previews-${{ github.sha }}
+          path: build/launcher-previews/*.png
+          if-no-files-found: error
+  package:
+    needs: [runtime, launcher]
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: bbhost-windows-${{ github.sha }}
+          path: build/runtime-artifact
+      - uses: actions/download-artifact@v4
+        with:
+          name: wpf-launcher-${{ github.sha }}
+          path: build/launcher
+      - name: Assemble Bloodborne PC package
+        run: tools/package_bloodborne.ps1 -RuntimeDirectory build/runtime-artifact -LauncherDirectory build/launcher -OutputDirectory build/player-package -Commit '${{ github.sha }}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Bloodborne-PC-Windows-${{ github.sha }}
+          path: build/player-package/*.zip
+          if-no-files-found: error
