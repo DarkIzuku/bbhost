@@ -1030,7 +1030,7 @@ bool live_resolution_install(ElfImage* image) {
     if (!host_opt_resolution(&w, &h)) w = 1920, h = 1080;
     const bool live = [] {
         const char* e = std::getenv("BBHOST_LIVE_RESOLUTION");
-        return !(e && e[0] == '0');
+        return e && *e ? e[0] != '0' : host_settings().live_resolution;
     }();
     const std::uint64_t start_px = static_cast<std::uint64_t>(w) * static_cast<std::uint32_t>(h);
     const bool tight = live && host_gpu_memory_tight();

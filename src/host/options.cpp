@@ -57,6 +57,8 @@ enum SettingId {
     kVsync,
     kFrameCap,
     kFpsCounter,
+    kUpscaler,
+    kLiveResolution,
     kFov,
     kCameraDistance,
     kCameraHeight,
@@ -116,6 +118,10 @@ Setting g_set[kSettingCount] = {
     // What reaches the screen, counted by the presenter (host/window.cpp).
     {"fps_counter", "FPS counter", {"Off", "On"}, 0,
      "Frames per second actually presented, in the top right corner.", false},
+    {"upscaler", "Upscaling", {"Native / Off", "FSR 1"}, 1,
+     "FSR 1 reconstructs a smaller render to the window size. At equal sizes the native image is used. Temporal providers are not integrated yet.", false},
+    {"live_resolution", "Live resolution", {"Off", "On"}, 1,
+     "GX rebuilds render targets when resolution changes. Off applies resolution at the next start; requires a restart.", true},
     // The follow camera's vertical field of view, LockCamParam's camFovY
     // (43 degrees in most areas) widened 5% a step (engine/camera.h).
     {"fov", "Field of view", {"+0%", "+5%", "+10%", "+15%", "+20%", "+25%", "+30%", "+35%", "+40%", "+45%", "+50%"}, 0,
@@ -235,9 +241,12 @@ const Row g_rows[] = {
     {Row::Option, nullptr, kVsync},
     {Row::Option, nullptr, kFrameCap},
     {Row::Option, nullptr, kFpsCounter},
+    {Row::Option, nullptr, kLiveResolution},
     {Row::Option, nullptr, kFov},
     {Row::Option, nullptr, kCameraDistance},
     {Row::Option, nullptr, kCameraHeight},
+    {Row::Header, "UPSCALING"},
+    {Row::Option, nullptr, kUpscaler},
     {Row::Header, "INPUT"},
     {Row::Option, nullptr, kMouseMenu},
     {Row::Option, nullptr, kMouseCamera},
@@ -706,6 +715,8 @@ void rebuild_settings() {
         h.fov_scale = env > 0.0f ? env : fov <= 0 ? 1.0f : 1.0f + 0.05f * static_cast<float>(fov);
     }
     h.mouse_menu = on_of(kMouseMenu);
+    h.spatial_upscale = index_of(kUpscaler) == 1;
+    h.live_resolution = index_of(kLiveResolution) == 1;
     h.mouse_camera = on_of(kMouseCamera);
     {
         // Stick deflection per pixel of mouse movement in one poll. The stick

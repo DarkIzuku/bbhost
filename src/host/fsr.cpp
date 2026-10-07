@@ -9,6 +9,7 @@
 // else into an image of the output size and a 1:1 blit from it (BBHOST_FSR_DIRECT=0
 // always does that). BBHOST_UPSCALE=linear keeps the bilinear blit.
 #include "host/gpu_internal.h"
+#include "host/settings.h"
 #include "host/shaders/fsr_easu.spv.h"
 #include "host/shaders/fsr_easu_h.spv.h"
 #include "host/shaders/fsr_rcas.spv.h"
@@ -71,10 +72,10 @@ struct Fsr {
     double total_us = 0;
 } g_fsr;
 
-const bool g_wanted = [] {
+bool wanted() {
     const char* e = std::getenv("BBHOST_UPSCALE");
-    return !(e && std::strcmp(e, "linear") == 0);
-}();
+    return e && *e ? std::strcmp(e, "linear") != 0 : host_settings().spatial_upscale;
+}
 
 VkPipeline make_pipeline(const std::uint32_t* code, std::size_t bytes) {
     VkShaderModuleCreateInfo smi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
@@ -237,7 +238,7 @@ void image_barrier(VkCommandBuffer cmd, VkImage image, VkImageLayout from, VkIma
 bool fsr_upscale_locked(VkCommandBuffer cmd, VkImage src, VkFormat src_format, std::uint32_t src_w, std::uint32_t src_h,
                         std::uint32_t src_x, std::uint32_t src_y, std::uint32_t sw, std::uint32_t sh, VkImage dst, VkRect2D area,
                         VkImageView dst_view) {
-    if (!g_wanted || !sw || !sh || !area.extent.width || !area.extent.height) return false;
+    if (!wanted() || !sw || !sh || !area.extent.width || !area.extent.height) return false;
     if (!g_fsr.tried) {
         g_fsr.tried = true;
         g_fsr.ok = fsr_init_locked();

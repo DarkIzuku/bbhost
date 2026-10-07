@@ -172,7 +172,9 @@ GUEST_ABI int hle_sysparam_int(int id, int* value) {
         // the other languages' message bundles.
         static const int lang = [] {
             const char* e = std::getenv("BBHOST_SYSTEM_LANG");
-            return e && *e ? std::atoi(e) : 1;
+            const std::string configured = config_value("system.language");
+            const int value = e && *e ? std::atoi(e) : configured.empty() ? 1 : std::atoi(configured.c_str());
+            return value >= 0 && value <= 29 ? value : 1;
         }();
         v = lang;
     } else if (id == 1000) {
@@ -443,7 +445,7 @@ GUEST_ABI int hle_np_get_state(int, int* state) {
     // preload (shadPS4 runs Np-stubbed = signed out and loads the full title).
     static const int forced = [] {
         const char* e = std::getenv("BBHOST_NP_SIGNED_OUT");
-        return (e && e[0] == '1') ? 1 : 2;
+        return (e && e[0] == '1') || config_value("online.offline") == "true" ? 1 : 2;
     }();
     // online.require_account: signed out until the F10 screen has logged an
     // account in, so the game plays offline rather than as a name

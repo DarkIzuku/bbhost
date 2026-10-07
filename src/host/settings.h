@@ -22,6 +22,8 @@ struct HostSettings {
     bool vsync = true;
     int frame_cap = 30;   // frames a second presented; 0 is no cap
     bool fps_counter = false;
+    bool spatial_upscale = true;  // FSR1, when render size is smaller than output
+    bool live_resolution = true;  // rebuilding GX targets, next-start switch
     int res_width = 1920, res_height = 1080;  // the render resolution (BBHOST_RES wins)
 
     // Camera: multipliers on LockCamParam's values (engine/camera.cpp)
