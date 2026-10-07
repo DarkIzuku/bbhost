@@ -910,7 +910,8 @@ int main(int argc, char** argv) {
     if (const App0Version v = config_app0_version(cfg.app0); v.app_ver.empty()) {
         host_log("app0: no sce_sys/param.sfo could be read in %s - is it the whole game folder?", cfg.app0.c_str());
     } else {
-        host_log("app0: the game folder is version %s (category %s)", v.app_ver.c_str(), v.category.c_str());
+        host_log("app0: the game folder is version %s (category %s)%s%s", v.app_ver.c_str(), v.category.c_str(),
+                 v.update.empty() ? "" : ", with its update read from ", v.update.c_str());
         if (v.app_ver != "01.09")
             host_log("app0: WARNING - the 1.09 eboot needs the 1.09 update's files, and this game folder is version %s. "
                      "Copy the update's files over it (its sce_sys/param.sfo then says APP_VER 01.09); without them "

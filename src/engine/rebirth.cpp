@@ -267,7 +267,7 @@ void rebirth_install(ElfImage* image) {
     const auto have = read_file(out / "stamp");
     const bool fresh = have && std::string(have->begin(), have->end()) == kStamp && fs::exists(out / kArchive);
     if (!fresh) {
-        const auto src = read_file(fs::path(app0) / kArchive);
+        const auto src = read_file(hle_fs_game_file(kArchive));
         if (!src) {
             host_log("rebirth: off - the dump has no %s", kArchive);
             return;

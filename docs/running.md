@@ -6,12 +6,19 @@ bbhost contains no game data. You bring:
 
 1. **The game files**: a dump of Bloodborne with the 1.09 update's files copied
    over it - the folder that contains `dvdroot_ps4`. Its
-   `sce_sys/param.sfo` says `APP_VER 01.09`.
+   `sce_sys/param.sfo` says `APP_VER 01.09`. The update can also stay in a
+   folder of its own beside the game's, named after it with `-UPDATE` (or
+   `-patch`) appended - `CUSA00900` and `CUSA00900-UPDATE`, the way shadPS4
+   keeps a game library. bbhost then reads every file the update has from
+   there and the rest from the game folder, as the console applies an update;
+   the log names the folder (`FS update=`).
 2. **The 1.09 eboot**, decrypted to an ELF. Its SHA-256 must be
    `941f887a562aae054fac35af8cc8f27cf075f3d4cc2e029fb5ae2a663aaa5ae7`. Every
    patch, hook and engine layout in bbhost is an address in that build, so any
    other eboot stops at start with its hash and the version its dump reports.
-   A dump without the update carries the 1.00 eboot, which will not do.
+   A dump without the update carries the 1.00 eboot, which will not do. When
+   `paths.eboot` is not set, the game's own `eboot.bin` is used if it is
+   decrypted already (a dump made for shadPS4), the update folder's first.
 
 Both must come from a copy of the game you own.
 

@@ -6,7 +6,9 @@
 #     app0 = "C:/Games/Bloodborne/CUSA00900"
 # A relative path is taken from the folder this file is in.
 [paths]
-# The folder that contains dvdroot_ps4 (the decrypted game dump).
+# The folder that contains dvdroot_ps4 (the decrypted game dump). An update
+# kept beside it in a folder of its own (CUSA00900-UPDATE or CUSA00900-patch,
+# as shadPS4 keeps one) is read in place of the game folder's files.
 app0 = "PATH-TO-THE-GAME-DUMP"
 # The decrypted eboot ELF (may also be given on the command line).
 eboot = "PATH-TO-THE-EBOOT"

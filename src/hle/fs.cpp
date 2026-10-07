@@ -1,4 +1,5 @@
 #include "hle/fs.h"
+#include "core/config.h"
 #include "core/write_watch.h"
 #include "hle/common.h"
 #include "host/frame_stats.h"
@@ -55,6 +56,11 @@ std::vector<std::string> g_allowed_roots;
 
 std::mutex g_fs_mu;
 std::string g_app0;
+// The game's update kept in a folder of its own beside the game folder
+// (core/config.h, config_game_folders): its files are read in place of the
+// game folder's, as the PS4 applies an update. Empty without one.
+std::string g_update;
+std::atomic<int> g_update_hits{0};
 std::string g_data;
 std::string g_tmp;
 // The port's asset overlay: a directory that resolves *ahead* of the dump, so
@@ -568,6 +574,21 @@ std::string guest_to_host(const char* guest) {
             host_log("FS trace: %s (no overlay file)", g.c_str());
         }
     }
+    // Then the update's file, in place of the game folder's. A directory the
+    // game folder has as well stays the game folder's: a listing of it is
+    // the game's, and the files in it still come from the update one by one.
+    if (!mounted && root == g_app0 && !rest.empty() && !g_update.empty()) {
+        std::string up = confine(join_path(g_update, rest));
+        if (!up.empty() && !path_exists(up.c_str())) {
+            const std::string ci = resolve_nocase(g_update, rest);
+            up = ci.empty() ? std::string() : confine(ci);
+        }
+        if (!up.empty() && path_exists(up.c_str()) &&
+            !(is_dir_path(up.c_str()) && is_dir_path(join_path(g_app0, rest).c_str()))) {
+            if (g_update_hits.fetch_add(1) < 8) host_log("FS update: %s -> %s", g.c_str(), up.c_str());
+            return up;
+        }
+    }
     std::string host = confine(join_path(root, rest));
     if (!mounted && root == g_app0 && !rest.empty() && !host.empty() && !path_exists(host.c_str())) {
         const std::string ci = resolve_nocase(root, rest);
@@ -642,18 +663,24 @@ void set_roots(const char* app0, const char* data, const char* tmp, const char* 
     std::string mods_dir = mods && mods[0] ? std::string(mods) : join_path(data_dir, "mods");
     mkdir_confined(data_dir);
     mkdir_confined(tmp_dir);
+    // The game folder and, beside it, the update's (app0 may name either).
+    const GameFolders game = config_game_folders(app0 ? app0 : "");
     g_allowed_roots.clear();
-    for (const std::string& r : {std::string(app0 ? app0 : ""), data_dir, tmp_dir, mods_dir}) {
+    for (const std::string& r : {game.base, game.update, data_dir, tmp_dir, mods_dir}) {
         std::string c = canonical_dir(r);
         if (!c.empty()) {
             g_allowed_roots.push_back(c);
         }
     }
-    g_app0 = canonical_dir(app0 ? app0 : "");
+    g_app0 = canonical_dir(game.base);
+    g_update = canonical_dir(game.update);
     g_data = canonical_dir(data_dir);
     g_tmp = canonical_dir(tmp_dir);
     g_mods = is_dir_path(mods_dir.c_str()) ? canonical_dir(mods_dir) : std::string();
     host_log("FS app0=%s data=%s tmp=%s", g_app0.c_str(), g_data.c_str(), g_tmp.c_str());
+    if (!g_update.empty()) {
+        host_log("FS update=%s (the game's update: its files are read in place of the game folder's)", g_update.c_str());
+    }
     if (!g_mods.empty()) {
         host_log("FS overlay=%s (shadows /app0)", g_mods.c_str());
     }
@@ -1204,6 +1231,15 @@ void hle_fs_set_roots(const char* app0, const char* data, const char* tmp, const
 
 const char* hle_fs_mods_root() { return g_mods.c_str(); }
 const char* hle_fs_app0_root() { return g_app0.c_str(); }
+const char* hle_fs_update_root() { return g_update.c_str(); }
+std::string hle_fs_game_file(const std::string& rel) {
+    const std::string r = !rel.empty() && rel[0] == '/' ? rel.substr(1) : rel;
+    if (!g_update.empty()) {
+        const std::string up = join_path(g_update, r);
+        if (path_exists(up.c_str())) return up;
+    }
+    return join_path(g_app0, r);
+}
 void hle_fs_set_generated_root(const char* dir) {
     g_generated = dir && *dir && is_dir_path(dir) ? canonical_dir(dir) : std::string();
     if (!g_generated.empty()) {

@@ -48,7 +48,9 @@ You need
     game is in this package:
       - the game folder (CUSA00900) with the 1.09 update's files copied over
         it: the folder that contains dvdroot_ps4, whose sce_sys/param.sfo
-        says APP_VER 01.09;
+        says APP_VER 01.09. Or the update kept beside it in a folder named
+        after it with -UPDATE appended (CUSA00900-UPDATE), the way shadPS4
+        keeps a game library: bbhost reads the update's files from there;
       - the 1.09 update's eboot.bin, decrypted to an ELF. Its SHA-256 must be
         941f887a562aae054fac35af8cc8f27cf075f3d4cc2e029fb5ae2a663aaa5ae7;
         bbhost stops at start and says why when it is another version (a

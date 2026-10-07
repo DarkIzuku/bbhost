@@ -184,7 +184,7 @@ void change_appearance_install(ElfImage* image) {
     const auto have = read_file(out / "stamp");
     const bool fresh = have && std::string(have->begin(), have->end()) == kStamp && fs::exists(out / kLayout);
     if (!fresh) {
-        const auto src = read_file(fs::path(app0) / kLayout);
+        const auto src = read_file(hle_fs_game_file(kLayout));
         if (!src) {
             host_log("change appearance: off - the dump has no %s", kLayout);
             return;

@@ -89,8 +89,9 @@ You need
     941f887a562aae054fac35af8cc8f27cf075f3d4cc2e029fb5ae2a663aaa5ae7; bbhost
     stops at start and says why when it is another version), and the game
     dump with the 1.09 update's files copied over it: the CUSA00900 folder
-    that contains dvdroot_ps4, whose sce_sys/param.sfo says APP_VER 01.09.
-    Neither is in this package.
+    that contains dvdroot_ps4, whose sce_sys/param.sfo says APP_VER 01.09
+    (or the update kept beside it in CUSA00900-UPDATE, the way shadPS4 keeps
+    a game library). Neither is in this package.
 
 Built static: libstdc++ ($glibcxx), SDL3, ffmpeg (movie decoders only),
 SPIRV-Tools.

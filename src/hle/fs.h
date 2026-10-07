@@ -11,6 +11,14 @@ void hle_fs_set_roots(const char* app0, const char* data, const char* tmp, const
 const char* hle_fs_data_root();  // host path of the data root; empty when none is set
 const char* hle_fs_mods_root();  // host path of the asset overlay; empty when there is none
 const char* hle_fs_app0_root();  // host path of the dump; empty when none is set
+// The game's update beside it (<game folder>-UPDATE or -patch, core/config.h's
+// config_game_folders), whose files /app0 reads find in place of the game
+// folder's; empty when there is none.
+const char* hle_fs_update_root();
+// The game's own file at an /app0-relative path ("dvdroot_ps4/..."): the
+// update's when it has the file, else the game folder's (which may not exist).
+// What the host builds its generated files from - never an overlay's file.
+std::string hle_fs_game_file(const std::string& rel);
 // A second overlay, behind `mods`: files the host made from the dump itself
 // (engine/menu_assets.h). /app0 reads find the player's mods first, then this.
 void hle_fs_set_generated_root(const char* dir);

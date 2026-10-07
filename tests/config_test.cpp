@@ -1,14 +1,18 @@
 // core/config.cpp: a per-user bbhost.toml as older releases left it, loaded
 // by this one - notes after quoted values, the live server's move to https,
-// and servers of the player's own left as they are.
+// and servers of the player's own left as they are. And the game folder with
+// its update in a folder of its own beside it, as shadPS4 keeps one.
 #include "core/config.h"
 
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <unistd.h>
 
@@ -46,6 +50,33 @@ HostConfig load(const std::string& toml) {
     std::string err;
     CHECK(config_load(1, argv, &c, &err));
     return c;
+}
+
+// A param.sfo with APP_VER and CATEGORY in it, laid out as the console's.
+void write_sfo(const fs::path& p, const std::string& ver, const std::string& cat) {
+    const std::vector<std::pair<std::string, std::string>> kv = {{"APP_VER", ver}, {"CATEGORY", cat}};
+    std::string head, entries, keys, data;
+    const auto put = [](std::string& s, std::uint32_t v, int bytes) {
+        for (int i = 0; i < bytes; ++i) s.push_back(static_cast<char>(v >> (8 * i)));
+    };
+    for (const auto& [k, v] : kv) {
+        const std::uint32_t len = static_cast<std::uint32_t>(v.size() + 1), cap = (len + 3) & ~3u;
+        put(entries, static_cast<std::uint32_t>(keys.size()), 2);
+        put(entries, 0x0204, 2);  // UTF-8 text
+        put(entries, len, 4);
+        put(entries, cap, 4);
+        put(entries, static_cast<std::uint32_t>(data.size()), 4);
+        keys += k + '\0';
+        data += v + std::string(cap - v.size(), '\0');
+    }
+    while (keys.size() % 4) keys.push_back('\0');
+    head = std::string("\0PSF", 4);
+    put(head, 0x0101, 4);
+    put(head, static_cast<std::uint32_t>(20 + entries.size()), 4);
+    put(head, static_cast<std::uint32_t>(20 + entries.size() + keys.size()), 4);
+    put(head, static_cast<std::uint32_t>(kv.size()), 4);
+    fs::create_directories(p.parent_path());
+    std::ofstream(p, std::ios::binary) << head << entries << keys << data;
 }
 
 bool is_live_https(const HostConfig& c) {
@@ -118,6 +149,50 @@ int main() {
     {
         HostConfig c = load("[online]\nhost = \"thehuntersdream.com\"\nscheme = \"http\"\n\n[bbhost]\nconfig_version = 3\n");
         CHECK(c.online_scheme == "http");
+    }
+
+    // The game folder, then an update folder beside it: "-patch", and
+    // "-UPDATE", which shadPS4 looks for first. app0 may name either one.
+    {
+        const fs::path lib = g_dir / "games";
+        const std::string base = (lib / "CUSA00900").string(), update = (lib / "CUSA00900-UPDATE").string();
+        fs::create_directories(lib / "CUSA00900" / "dvdroot_ps4");
+        GameFolders g = config_game_folders(base);
+        CHECK(g.base == base && g.update.empty());
+        fs::create_directories(lib / "CUSA00900-patch");
+        g = config_game_folders(base + "/");
+        CHECK(g.base == base && g.update == (lib / "CUSA00900-patch").string());
+        fs::create_directories(lib / "CUSA00900-UPDATE" / "dvdroot_ps4");
+        g = config_game_folders(base);
+        CHECK(g.base == base && g.update == update);
+        g = config_game_folders(update);
+        CHECK(g.base == base && g.update == update);
+        // An update folder with no game folder beside it is the game folder.
+        fs::create_directories(lib / "other-UPDATE");
+        g = config_game_folders((lib / "other-UPDATE").string());
+        CHECK(g.base == (lib / "other-UPDATE").string() && g.update.empty());
+
+        // The version is the update's when it has a param.sfo, else the game folder's.
+        write_sfo(lib / "CUSA00900" / "sce_sys" / "param.sfo", "01.00", "gd");
+        App0Version v = config_app0_version(base);
+        CHECK(v.app_ver == "01.00" && v.category == "gd" && v.update.empty());
+        write_sfo(lib / "CUSA00900-UPDATE" / "sce_sys" / "param.sfo", "01.09", "gp");
+        v = config_app0_version(base);
+        CHECK(v.app_ver == "01.09" && v.category == "gp" && v.update == update);
+        CHECK(config_app0_version(update).app_ver == "01.09");
+
+        // Without paths.eboot, the game's own eboot.bin when it is an ELF, the update's first.
+        std::ofstream(lib / "CUSA00900" / "eboot.bin", std::ios::binary) << "SCE\0 an encrypted one";
+        HostConfig c = load("[paths]\napp0 = \"" + base + "\"\n");
+        CHECK(c.eboot.empty());
+        std::ofstream(lib / "CUSA00900" / "eboot.bin", std::ios::binary) << "\x7f" "ELF base";
+        c = load("[paths]\napp0 = \"" + base + "\"\n");
+        CHECK(c.eboot == base + "/eboot.bin");
+        std::ofstream(lib / "CUSA00900-UPDATE" / "eboot.bin", std::ios::binary) << "\x7f" "ELF update";
+        c = load("[paths]\napp0 = \"" + base + "\"\n");
+        CHECK(c.eboot == update + "/eboot.bin");
+        c = load("[paths]\napp0 = \"" + base + "\"\neboot = \"" + base + "/eboot.bin\"\n");
+        CHECK(c.eboot == base + "/eboot.bin");  // a path given is kept
     }
 
     std::error_code ec;

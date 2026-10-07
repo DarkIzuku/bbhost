@@ -69,7 +69,7 @@ void five_players_install(ElfImage* image) {
         int made = 0;
         for (const MaidenEventMap& m : maiden_event_maps()) {
             const std::string rel = script_path(m.map);
-            const auto src = read_file(fs::path(app0) / rel);
+            const auto src = read_file(hle_fs_game_file(rel));
             if (!src) {
                 host_log("five players: the dump has no %s; that map keeps the game's maidens", rel.c_str());
                 continue;

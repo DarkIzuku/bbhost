@@ -101,7 +101,8 @@ See [docs/rendering.md](docs/rendering.md) for the graphics in detail and
 ## Getting started
 
 1. Get the game files: a dump of Bloodborne with the 1.09 update copied over
-   it, and the 1.09 `eboot.bin` decrypted to an ELF (SHA-256
+   it (or kept beside it as `CUSA00900-UPDATE`, the way shadPS4 keeps it), and
+   the 1.09 `eboot.bin` decrypted to an ELF (SHA-256
    `941f887a562aae054fac35af8cc8f27cf075f3d4cc2e029fb5ae2a663aaa5ae7`).
 2. Download a release for Windows or Linux, or build bbhost yourself.
 3. Start `bbhost`. The setup window asks for the two paths, checks them and

@@ -98,12 +98,24 @@ void config_set_skip_intro(bool on);
 //       rewritten with the new ones (scheme, verify_tls, require_account,
 //       auth_server).
 constexpr int kUserConfigVersion = 3;
-// The game folder's version, from its sce_sys/param.sfo: APP_VER ("01.09")
-// and CATEGORY ("gp" the game with an update, "gd" without); both empty when
-// the file cannot be read. The 1.09 eboot needs the 1.09 update's files: a
-// game folder they were not copied over stops the game when it reads one.
+// The game folder and its update. The PS4 applies an update by putting its
+// files in place of the game's; a dump can keep the update in a folder of its
+// own beside the game's, named after it with "-UPDATE" or "-patch" appended
+// (CUSA00900-UPDATE: how shadPS4 lays out a game library). Every game file
+// the update has is then read from there, the rest from the game folder.
+// `update` is empty when there is no such folder. A paths.app0 that names the
+// update folder itself, with the game folder beside it, gives the same pair.
+struct GameFolders {
+    std::string base, update;
+};
+GameFolders config_game_folders(const std::string& app0);
+// The game's version, from sce_sys/param.sfo (the update folder's when it has
+// one): APP_VER ("01.09") and CATEGORY ("gp" the game with an update, "gd"
+// without); both empty when the file cannot be read. `update` is the update
+// folder it was read from, "" for the game folder's own. The 1.09 eboot needs
+// the 1.09 update's files: without them the game stops when it reads one.
 struct App0Version {
-    std::string app_ver, category;
+    std::string app_ver, category, update;
 };
 App0Version config_app0_version(const std::string& app0);
 // The PC enhancements, the same way: the options file's choices (F10, the

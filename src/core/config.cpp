@@ -637,6 +637,20 @@ bool config_load(int argc, char** argv, HostConfig* out, std::string* error) {
             }
         }
     }
+    if (c.eboot.empty() && !c.app0.empty()) {
+        // Then the game's own eboot.bin, the update's first, when it is an
+        // ELF already: a dump made for shadPS4 has it decrypted.
+        const GameFolders g = config_game_folders(c.app0);
+        for (const std::string& d : {g.update, g.base}) {
+            if (d.empty()) continue;
+            std::ifstream f(d + "/eboot.bin", std::ios::binary);
+            char magic[4] = {};
+            if (f.read(magic, 4) && std::memcmp(magic, "\x7f" "ELF", 4) == 0) {
+                c.eboot = d + "/eboot.bin";
+                break;
+            }
+        }
+    }
     if (c.data.empty()) {
         // Saves and caches: where they were (a data folder beside the eboot,
         // the old default) if that exists, else the per-user data folder,
@@ -754,16 +768,15 @@ std::string config_eboot_help(const HostConfig& c, const std::string& sha256, co
     line("    eboot   " + c.eboot);
     line("    sha256  " + sha256);
     line("    1.09's  " + std::string(want_sha256));
-    // The dump says which version it is; the eboot itself does not.
-    std::map<std::string, SfoValue> sfo;
-    std::string err;
-    std::string ver;
-    if (!sfo_read(c.app0 + "/sce_sys/param.sfo", &sfo, &err)) {
-        line("    app0    " + c.app0 + " (its sce_sys/param.sfo: " + err + ")");
+    // The dump says which version it is (its update folder, when it has
+    // one); the eboot itself does not.
+    const App0Version v = config_app0_version(c.app0);
+    const std::string ver = v.app_ver;
+    if (ver.empty()) {
+        line("    app0    " + c.app0 + " (no sce_sys/param.sfo could be read in it)");
     } else {
-        ver = sfo.count("APP_VER") ? sfo["APP_VER"].text : "?";
-        const std::string cat = sfo.count("CATEGORY") ? sfo["CATEGORY"].text : "?";
-        line("    app0    " + c.app0 + " says version " + ver + ", category " + cat +
+        const std::string& cat = v.category;
+        line("    app0    " + (v.update.empty() ? c.app0 : v.update) + " says version " + ver + ", category " + cat +
              (cat == "gd" ? " (the game without its updates)" : cat == "gp" ? " (the game with an update)" : ""));
     }
     line("");
@@ -805,11 +818,41 @@ void config_set_online(const std::string& host, const std::string& scheme, bool 
     g_cfg.auth_server = auth_server;
 }
 
+GameFolders config_game_folders(const std::string& app0) {
+    GameFolders g;
+    std::string a = app0;
+    while (a.size() > 1 && (a.back() == '/' || a.back() == '\\')) a.pop_back();
+    if (a.empty()) return g;
+    static const char* const kSuffixes[] = {"-UPDATE", "-patch"};  // shadPS4 tries them in this order
+    for (const char* s : kSuffixes) {
+        const std::size_t n = std::strlen(s);
+        if (a.size() > n && a.compare(a.size() - n, n, s) == 0 && dir_exists(a.substr(0, a.size() - n) + "/dvdroot_ps4")) {
+            g.base = a.substr(0, a.size() - n);
+            g.update = a;
+            return g;
+        }
+    }
+    g.base = a;
+    for (const char* s : kSuffixes) {
+        if (dir_exists(a + s)) {
+            g.update = a + s;
+            break;
+        }
+    }
+    return g;
+}
+
 App0Version config_app0_version(const std::string& app0) {
     App0Version v;
+    const GameFolders g = config_game_folders(app0);
+    if (g.base.empty()) return v;
     std::map<std::string, SfoValue> sfo;
     std::string err;
-    if (app0.empty() || !sfo_read(app0 + "/sce_sys/param.sfo", &sfo, &err)) return v;
+    if (!g.update.empty() && sfo_read(g.update + "/sce_sys/param.sfo", &sfo, &err)) {
+        v.update = g.update;
+    } else if (!sfo_read(g.base + "/sce_sys/param.sfo", &sfo, &err)) {
+        return v;
+    }
     if (sfo.count("APP_VER")) v.app_ver = sfo["APP_VER"].text;
     if (sfo.count("CATEGORY")) v.category = sfo["CATEGORY"].text;
     return v;
@@ -826,7 +869,9 @@ bool config_write_template(const std::string& path) {
            "# This file is the per-user one (%APPDATA%\\bbhost on Windows, ~/.config/bbhost on\n"
            "# Linux): every copy of bbhost reads it, so a new download or an update keeps it.\n"
            "[paths]\n"
-           "# The folder that contains dvdroot_ps4 (the decrypted game dump).\n"
+           "# The folder that contains dvdroot_ps4 (the decrypted game dump). An update\n"
+           "# kept beside it in a folder of its own (CUSA00900-UPDATE or CUSA00900-patch,\n"
+           "# as shadPS4 keeps one) is read in place of the game folder's files.\n"
            "#   app0 = \"C:\\Games\\Bloodborne\\CUSA00900\"\n"
            "app0 = \"PATH-TO-THE-GAME-DUMP\"\n"
            "# The decrypted eboot ELF. May also be given on the command line.\n"
