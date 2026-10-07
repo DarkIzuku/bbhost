@@ -68,6 +68,7 @@ struct Core {
 #endif
     Result (*instance_ext)(const Discovery*, unsigned*, VkExtensionProperties**) = nullptr;
     Result (*device_ext)(VkInstance, VkPhysicalDevice, const Discovery*, unsigned*, VkExtensionProperties**) = nullptr;
+    Result (*legacy_extensions)(unsigned*, const char***, unsigned*, const char***) = nullptr;
     Result (*requirements)(VkInstance, VkPhysicalDevice, const Discovery*, Requirement*) = nullptr;
     // Driver's ProjectID_Ext ABI (SDK's Init_with_ProjectID has a different
     // argument order). Verified against the driver and public proxy sources.
@@ -100,8 +101,11 @@ struct Core {
 #else
         module = dlopen("libnvidia-ngx.so.1", RTLD_NOW | RTLD_LOCAL);
 #endif
-        return module && load(instance_ext, "NVSDK_NGX_VULKAN_GetFeatureInstanceExtensionRequirements") &&
-               load(device_ext, "NVSDK_NGX_VULKAN_GetFeatureDeviceExtensionRequirements") &&
+        if (!module) return false;
+        load(instance_ext, "NVSDK_NGX_VULKAN_GetFeatureInstanceExtensionRequirements");
+        load(device_ext, "NVSDK_NGX_VULKAN_GetFeatureDeviceExtensionRequirements");
+        load(legacy_extensions, "NVSDK_NGX_VULKAN_RequiredExtensions");
+        return ((instance_ext && device_ext) || legacy_extensions) &&
                load(requirements, "NVSDK_NGX_VULKAN_GetFeatureRequirements") && load(init, "NVSDK_NGX_VULKAN_Init_ProjectID_Ext") &&
                load(capabilities, "NVSDK_NGX_VULKAN_GetCapabilityParameters") && load(allocate, "NVSDK_NGX_VULKAN_AllocateParameters") &&
                load(destroy, "NVSDK_NGX_VULKAN_DestroyParameters") && load(create, "NVSDK_NGX_VULKAN_CreateFeature1") &&
@@ -183,7 +187,23 @@ struct DlssProvider::Impl {
     bool extensions(bool instance, VkInstance vk, VkPhysicalDevice pd, std::vector<std::string>& out) {
         if (!load()) return false;
         unsigned count = 0; VkExtensionProperties* props = nullptr;
-        const auto r = instance ? core->instance_ext(&discovery, &count, &props) : core->device_ext(vk, pd, &discovery, &count, &props);
+        const auto r = instance ? (core->instance_ext ? core->instance_ext(&discovery, &count, &props) : 0xbad00012u)
+                                : (core->device_ext ? core->device_ext(vk, pd, &discovery, &count, &props) : 0xbad00012u);
+        // Some current driver cores export the feature-specific APIs as
+        // NotImplemented stubs. The documented legacy query still returns the
+        // complete required extension lists; never replace them with two
+        // hardcoded NVX names or ignore an unrelated discovery failure.
+        if ((r == 0xbad00012u || r == 0xbad0000cu) && core->legacy_extensions) {
+            unsigned ni = 0, nd = 0; const char** ie = nullptr; const char** de = nullptr;
+            const auto legacy = core->legacy_extensions(&ni, &ie, &nd, &de);
+            if (legacy != success || ni > 128 || nd > 128 || (ni && !ie) || (nd && !de)) return fail("NGX legacy extension discovery failed", legacy);
+            const auto n = instance ? ni : nd; const auto names = instance ? ie : de; std::vector<std::string> found;
+            for (unsigned k = 0; k < n; ++k) {
+                if (!names[k] || !std::memchr(names[k], 0, VK_MAX_EXTENSION_NAME_SIZE)) return fail("NGX returned an invalid legacy extension name");
+                found.emplace_back(names[k]);
+            }
+            out = std::move(found); std::fprintf(stderr, "DLSS: using driver's complete legacy %s extension requirements\n", instance ? "instance" : "device"); return true;
+        }
         if (r != success || count > 128 || (count && !props)) return fail("NGX extension discovery failed", r);
         std::vector<std::string> found;
         for (unsigned i = 0; i < count; ++i) {
@@ -235,6 +255,25 @@ bool DlssProvider::initialize(VkInstance instance, VkPhysicalDevice physical, Vk
     i.available = true; i.problem.clear(); std::fprintf(stderr, "DLSS: NGX Vulkan initialized; parameter ABI verified on %s\n", props.deviceName); return true;
 }
 bool DlssProvider::available() const { return impl_->available && !impl_->failed; }
+bool DlssProvider::optimal_settings(UpscaleExtent output, UpscalePreset preset, DlssOptimalSettings& out) {
+    auto& i = *impl_;
+    if (!available() || !output.width || !output.height || quality(preset) < 0) return false;
+    void* callback = nullptr;
+    if (gp(i.caps, "DLSSOptimalSettingsCallback", &callback) != success || !callback) return i.fail("DLSS optimal settings callback is unavailable");
+    su(i.caps, "Width", output.width); su(i.caps, "Height", output.height); si(i.caps, "PerfQualityValue", quality(preset)); si(i.caps, "RTXValue", 0);
+    const auto r = reinterpret_cast<Result(*)(Parameter*)>(callback)(i.caps);
+    if (r != success) return i.fail("DLSS optimal settings query failed", r);
+    DlssOptimalSettings found;
+    if (gu(i.caps, "OutWidth", &found.render.width) != success || gu(i.caps, "OutHeight", &found.render.height) != success) return i.fail("DLSS optimal render dimensions are absent");
+    found.minimum = found.maximum = found.render;
+    gu(i.caps, "DLSS.Get.Dynamic.Min.Render.Width", &found.minimum.width); gu(i.caps, "DLSS.Get.Dynamic.Min.Render.Height", &found.minimum.height);
+    gu(i.caps, "DLSS.Get.Dynamic.Max.Render.Width", &found.maximum.width); gu(i.caps, "DLSS.Get.Dynamic.Max.Render.Height", &found.maximum.height);
+    if (!found.minimum.width || !found.minimum.height || found.minimum.width > found.render.width || found.minimum.height > found.render.height ||
+        found.maximum.width < found.render.width || found.maximum.height < found.render.height || found.maximum.width > output.width || found.maximum.height > output.height)
+        return i.fail("DLSS returned inconsistent render size limits");
+    if (preset == UpscalePreset::NativeAA && !(found.render == output)) return i.fail("DLAA is unsupported by this model");
+    out = found; return true;
+}
 const std::string& DlssProvider::problem() const { return impl_->problem; }
 bool DlssProvider::supports(const UpscaleConfig& c, const UpscaleFrame& f) const { return available() && dlss_frame_contract(c, f); }
 bool DlssProvider::record(const UpscaleConfig& c, const UpscaleFrame& f) {

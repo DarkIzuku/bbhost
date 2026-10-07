@@ -110,6 +110,11 @@ void read_output(Device& d, Image& output) {
     if (bad || largest_error > 0.08f) throw std::runtime_error("DLSS synthetic output failed readback validation");
 }
 void run_mode(Device& d, DlssProvider& provider, UpscaleExtent render, UpscaleExtent out, UpscalePreset preset) {
+    DlssOptimalSettings optimal;
+    if (!provider.optimal_settings(out, preset, optimal)) throw std::runtime_error(provider.problem());
+    render = optimal.render;
+    std::printf("DLSS optimal: %ux%u -> %ux%u, range %ux%u .. %ux%u\n", render.width, render.height, out.width, out.height,
+                optimal.minimum.width, optimal.minimum.height, optimal.maximum.width, optimal.maximum.height);
     Image color(d, VK_FORMAT_R16G16B16A16_SFLOAT, render), depth(d, VK_FORMAT_D32_SFLOAT, render, true), motion(d, VK_FORMAT_R16G16_SFLOAT, render), output(d, VK_FORMAT_R16G16B16A16_SFLOAT, out);
     UpscaleConfig config; config.provider = UpscalerId::Dlss; config.preset = preset; config.render = render; config.output = out;
     UpscaleHistory history;

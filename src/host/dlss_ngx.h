@@ -7,6 +7,9 @@
 #include <vector>
 
 namespace gpu {
+struct DlssOptimalSettings {
+    UpscaleExtent render, minimum, maximum;
+};
 // Runtime ABI binding adapted from bloodborne_pc/vk_dlss.cpp. No NVIDIA SDK
 // headers, linked SDK libraries, model or driver binaries are distributed.
 // The caller supplies its existing queue-fence retirement mechanism. A feature
@@ -22,6 +25,7 @@ public:
     bool instance_extensions(std::vector<std::string>& out);
     bool device_extensions(VkInstance, VkPhysicalDevice, std::vector<std::string>& out);
     bool initialize(VkInstance, VkPhysicalDevice, VkDevice);
+    bool optimal_settings(UpscaleExtent output, UpscalePreset, DlssOptimalSettings& out);
     bool available() const;
     const std::string& problem() const;
     UpscalerId id() const override { return UpscalerId::Dlss; }

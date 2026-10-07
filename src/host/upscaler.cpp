@@ -69,7 +69,12 @@ bool upscale_record_locked(const UpscaleConfig& config, UpscaleFrame frame) {
     if (p->temporal() && !temporal_inputs_valid(frame.stage, frame.depth.image != VK_NULL_HANDLE, frame.motion.image != VK_NULL_HANDLE, frame.engine_jitter_applied, frame.exposure)) {
         history.invalidate(HistoryReset::BackendFailure); p = &native; fallback = true;
     }
-    if (!p->supports(config, frame)) p = &native;
+    if (!p->supports(config, frame)) {
+        // A presentable fallback must not consume the failed temporal frame's
+        // reset. The next actual DLSS/FSR dispatch still needs that reset.
+        if (p->temporal()) history.invalidate(HistoryReset::BackendFailure);
+        p = &native; fallback = true;
+    }
     if (!p->record(config, frame)) {
         history.invalidate(HistoryReset::BackendFailure);
         return native.record(config, frame);
