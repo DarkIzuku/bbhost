@@ -153,6 +153,14 @@ add_custom_target(bbhost_version
   BYPRODUCTS ${CMAKE_BINARY_DIR}/gen/bbhost_version.h)
 add_dependencies(bbhost bbhost_version)
 
+# The Windows exe's icon and version details.
+if(WIN32)
+  enable_language(RC)
+  target_sources(bbhost PRIVATE res/bbhost.rc)
+  set_source_files_properties(res/bbhost.rc PROPERTIES
+    OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/res/bbhost.ico;${CMAKE_BINARY_DIR}/gen/bbhost_version.h")
+endif()
+
 # The example plugin (include/bbhost_plugin.h, plugins/hello): build/plugins/hello.so
 # or .dll, which the host next to it loads.
 add_library(bb_plugin_hello MODULE plugins/hello/hello.c)

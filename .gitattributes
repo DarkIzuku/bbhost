@@ -5,6 +5,7 @@
 # Binary.
 *.gz binary
 *.png binary
+*.ico binary
 *.ppm binary
 *.bin binary
 *.bndb binary

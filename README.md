@@ -153,6 +153,7 @@ src/
 include/         the plugin API and the engine SDK (layouts, params, symbols)
 plugins/         the official plugins (randomizer, boss rush, mutators) and an example
 patches/         byte patches as data
+res/             the Windows exe's icon and version details
 tests/           unit tests (ctest)
 tools/           shader tools, format tools, test drivers and packaging scripts
 third_party/     LibAtrac9, Dear ImGui, Monocypher
