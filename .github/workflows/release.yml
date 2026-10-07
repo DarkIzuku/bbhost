@@ -1,8 +1,11 @@
 # Release binaries: the Windows zip (cross-built in an Arch Linux container,
 # tools/ci_windows.sh), the portable Linux tarball (Ubuntu 24.04 with static
-# libstdc++, tools/ci_build.sh + tools/package_linux.sh) and the playtest kits
-# made from both (tools/package_playtest.sh), with the unstripped binaries for
-# symbolizing crash reports.
+# libstdc++, tools/ci_build.sh + tools/package_linux.sh) and the Steam Deck
+# kit made from it, with the unstripped binaries for symbolizing crash
+# reports. The bundles go to the live server (https://thehuntersdream.com) by
+# default, and the playtest kits for the dev server (tools/package_playtest.sh)
+# are never among them: tools/check_release_bundle.sh fails the release
+# otherwise.
 #
 # Push a tag v* to publish them as a GitHub release; "Run workflow" on the
 # Actions page builds the same files as artifacts of the run, no release.
@@ -105,12 +108,11 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: dist
-      - name: playtest kits, the Steam Deck kit and the updater's executables
+      - name: the Steam Deck kit and the updater's executables
         run: |
-          tools/package_playtest.sh dist/windows/*.zip dist/linux/*.tar.gz dist/playtest
           tools/package_steamdeck.sh dist/linux/*.tar.gz dist/steamdeck
           mkdir -p dist/release dist/x
-          cp dist/windows/* dist/linux/* dist/playtest/* dist/steamdeck/* dist/release/
+          cp dist/windows/* dist/linux/* dist/steamdeck/* dist/release/
           # The stripped executables out of the packages, under the names the updater asks for.
           w=$(ls dist/windows/bbhost-win-*.zip); v=$(basename "$w" .zip); v=${v#bbhost-win-}
           unzip -q -j "$w" "bbhost-win-$v/bbhost.exe" -d dist/x
@@ -134,6 +136,8 @@ jobs:
           done
           (cd dist/release && sha256sum * > SHA256SUMS)
           ls -la dist/release
+      - name: the bundles go to the live server
+        run: tools/check_release_bundle.sh dist/release
       - name: sign
         env:
           RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}

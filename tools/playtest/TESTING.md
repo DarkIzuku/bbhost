@@ -63,14 +63,10 @@ are set once more, in the per-user config, and never again.
   network protection > Allow an app through firewall*.)
 - **Linux:** open a terminal in the folder and run **`./run-bbhost.sh`**.
 
-Always start it this way, not by opening `bbhost.exe` (or `bbhost`) itself:
-the launcher is what points bbhost at the playtest server. Started on its own,
-bbhost talks to the live server, which has no accounts yet, and linking or
-creating an account says the server "has no account service".
-
 Always start it this way, not by opening `bbhost.exe`/`bbhost` directly: the
-launcher uses the playtest settings and writes the log file we need when
-something goes wrong (`logs/bbhost-<date>-<time>.log`).
+launcher is what points bbhost at the playtest server (started on its own,
+bbhost plays on the live server instead), and it writes the log file we need
+when something goes wrong (`logs/bbhost-<date>-<time>.log`).
 
 The first time, areas load slowly and stutter for a moment while the game
 prepares its graphics for your card. That goes away on the next visit.

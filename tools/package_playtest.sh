@@ -1,5 +1,7 @@
 #!/bin/bash
-# The tester packages for a group playtest on the dev server: the Windows zip
+# The tester packages for a group playtest on the dev server, built by hand
+# and never part of a release (tools/check_release_bundle.sh fails a release
+# that carries one; releases go to the live server). The Windows zip
 # (tools/win_package.sh's) and the Linux tarball (tools/package_linux.sh's),
 # each with the playtest config, TESTING.md and a launcher that writes a log
 # file, from tools/playtest/. Players' own game files never go in: they bring

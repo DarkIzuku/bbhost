@@ -4,8 +4,10 @@
 # manifests it applies (patches/, looked for next to the binary), the plugin
 # header, the example config, a README with what the machine must have, a
 # launcher that keeps a log file, and the empty data/, logs/ and build/ (frame
-# dumps) the run writes into. The unstripped binary is kept beside the tarball under the same
-# revision name, for symbolizing a crash report from that machine.
+# dumps) the run writes into: the release's Linux bundle. Nothing in it picks
+# a server: bbhost's defaults are the live server's (https://thehuntersdream.com).
+# The unstripped binary is kept beside the tarball under the same revision
+# name, for symbolizing a crash report from that machine.
 #   tools/package_linux.sh [BIN] [OUTDIR]
 # BIN defaults to build-linux-portable/build/bbhost (tools/linux_portable_build.sh),
 # the build that runs on other distributions; build/bbhost only runs on a
@@ -73,9 +75,10 @@ cat > "$dir/README-linux.txt" <<EOF
 bbhost for Linux, build $name
 ==================================
 
-A native host for the Bloodborne 1.09 eboot (PC, not PS4 emulation).
-Free software under the GNU GPL, version 3 or later (LICENSE); the source
-is at https://github.com/droogie/bbhost.
+bbhost runs Bloodborne on PC: the game's own 1.09 executable, its calls into
+the PS4's system libraries answered by bbhost and its graphics recompiled for
+Vulkan. Free software under the GNU GPL, version 3 or later (LICENSE); the
+source is at https://github.com/droogie/bbhost.
 
 You need
   - x86-64 Linux with glibc ${glibc#GLIBC_} or newer (Ubuntu 24.04, Linux Mint 22, Debian 13,
@@ -101,16 +104,49 @@ Built static: libstdc++ ($glibcxx), SDL3, ffmpeg (movie decoders only),
 SPIRV-Tools.
 
 Setup
-  Run ./run-bbhost.sh once: it writes ~/.config/bbhost/bbhost.toml and says so.
-  Set app0 and eboot in that file. Every copy of bbhost reads it, so a new
-  download or an update needs nothing set again; the F10 settings and the
-  account live beside it, saves and caches in ~/.local/share/bbhost/data.
+  Untar this folder somewhere of its own, for example ~/Games/bbhost, and run
+  ./run-bbhost.sh from a terminal there. The first time, the setup window
+  opens: pick the game folder and the decrypted eboot with the Browse buttons
+  (each turns green when it is right), then Play. ./run-bbhost.sh --setup
+  opens it again.
+
+  The settings are kept in ~/.config/bbhost/bbhost.toml, which every copy of
+  bbhost reads, so a new download or an update needs nothing set again. The
+  F10 settings and your account sign-in are kept beside it, saves and caches
+  in ~/.local/share/bbhost/data.
   bbhost.example.toml lists every setting.
 
 Run
   ./run-bbhost.sh          (the log goes to logs/ and the terminal)
-  F10 in the game window opens the host's options (resolution, window mode,
-  vsync, frame cap, keys, account).
+  The first visit to an area stutters for a moment while its graphics are
+  prepared for your GPU; later visits do not. F10 in the game window opens
+  the PC settings: resolution, window mode, V-Sync, frame cap, mouse, key
+  bindings and your account.
+
+Online
+  bbhost plays online on the community server, https://thehuntersdream.com,
+  with other bbhost players (not with PS4s). The game stays offline until this
+  PC is linked to an account, and the account's name is your name online.
+  Link it once, in the setup window's Account section or with F10 > ACCOUNT
+  at the title screen:
+    - Log in with Discord (Link with Discord in F10): a code appears and your
+      browser opens https://thehuntersdream.com/link. Sign in there with
+      Discord, check that the page names this PC, and approve.
+    - Create account on this PC: type a name (3 to 16 letters, digits, _ or
+      -). A recovery code appears once. Write it down: it is the only way to
+      get the account back on another PC or after reinstalling (Recover
+      account takes the name and that code).
+  Then choose Play Online at the title.
+
+  Co-op: the host rings the Beckoning Bell and the helper the Small Resonant
+  Bell, in the same area. Invasions: the Sinister Resonant Bell. The website
+  has the live map of deaths and messages, the leaderboards and your account
+  page (Public profile puts your name on them).
+
+  Other players reach you on UDP port 9307: a firewall on this PC must let it
+  in. If summons keep failing with one person, forwarding that port to this
+  PC on your router often fixes it. Two PCs in one house: set p2p_addr under
+  [online] in ~/.config/bbhost/bbhost.toml to each PC's local address.
 
 Steam Deck
   The release's bbhost-steamdeck tarball is this package with the Deck's
@@ -131,10 +167,12 @@ Plugins
   [boss_rush], [mutators]); docs/plugins.md in the repository lists them.
   Use the boss rush on a save of its own.
 
-If it crashes
-  The log holds a block starting "SIGSEGV pc=" with the registers and the
-  frames. Send the log with the build name above; the matching
-  $name.debug (kept by whoever built this) symbolizes it.
+Reporting a problem
+  Send the log of that session from logs/ (privately: it contains your
+  internet address), with what happened, when, your account name and your
+  GPU. If the game crashed, the log ends with a block starting "SIGSEGV pc="
+  with the registers and the frames; the release's $name.debug symbolizes
+  it.
 EOF
 
 # Packed from a local copy with plain modes: on a filesystem without them

@@ -84,10 +84,15 @@ every shader in the game's shader bundles.
 | `tools/package_linux.sh <bbhost> <outdir>` | a Linux tarball (built with `tools/linux_portable_build.sh` for a portable binary) |
 | `tools/package_steamdeck.sh` | the Linux package with the Steam Deck's settings |
 | `tools/package_plugins.sh` | the official plugins with their signatures |
+| `tools/package_playtest.sh` | tester kits for a playtest on a dev server, built by hand |
 
-The release workflow (`.github/workflows/release.yml`) builds all of them from
-a `v*` tag, signs `SHA256SUMS` and the official plugins with the release key,
-and publishes the release that bbhost's updater reads.
+The release workflow (`.github/workflows/release.yml`) builds the Windows,
+Linux and Steam Deck packages from a `v*` tag, signs `SHA256SUMS` and the
+official plugins with the release key, and publishes the release that bbhost's
+updater reads. The packages pick no server, so they play on the live server
+(`https://thehuntersdream.com`), bbhost's default; `tools/check_release_bundle.sh`
+fails a release whose packages would go anywhere else, or that carries a
+playtest kit.
 
 ## Continuous integration
 
