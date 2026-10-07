@@ -55,6 +55,7 @@ add_executable(bbhost
   src/core/sha256.cpp
   src/core/sfo.cpp
   src/core/image_file.cpp
+  src/host/tess_lds.cpp
   src/engine/guest.cpp
   src/engine/patch_manifest.cpp
   src/engine/gx_resources.cpp
@@ -333,6 +334,9 @@ if(UNIX)
   add_executable(stun_test tests/stun_test.cpp src/net/stun.cpp)
   target_include_directories(stun_test PRIVATE src)
   add_test(NAME stun_test COMMAND stun_test)
+  add_executable(tess_lds_test tests/tess_lds_test.cpp src/host/tess_lds.cpp)
+  target_include_directories(tess_lds_test PRIVATE src)
+  add_test(NAME tess_lds_test COMMAND tess_lds_test)
   add_executable(debug_font_test tests/debug_font_test.cpp)
   target_include_directories(debug_font_test PRIVATE plugins/debug_menu)
   target_compile_definitions(debug_font_test PRIVATE BB_FONT14_PATH="${CMAKE_SOURCE_DIR}/plugins/debug_menu/font14.bin")

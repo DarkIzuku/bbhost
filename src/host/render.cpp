@@ -9,6 +9,7 @@
 #include "engine/gx_state.h"
 #include "host/gpu_internal.h"
 #include "host/shader_patch.h"
+#include "host/tess_lds.h"
 
 #include "host/draw_capture.h"
 #include "gcn/container.h"
@@ -9336,6 +9337,16 @@ constexpr std::uint64_t kTessRegions = 16;
 constexpr std::uint64_t kTessRegionBytes = 16ull << 20;
 constexpr std::uint64_t kTessRingBytes = kTessRegions * kTessRegionBytes;
 
+// Where the ring is and the LDS of the last tessellated draws in it, for the
+// device-fault report (gpu::tess_lds_describe, host/tess_lds.h): which draw's
+// LDS a faulting address is in or just past. Its own lock: the report can come
+// while the renderer's is held.
+std::mutex g_tess_lds_mu;
+std::uint64_t g_tess_ring_address = 0;
+constexpr std::size_t kTessLdsUses = 32;
+TessLdsUse g_tess_lds_uses[kTessLdsUses];
+std::uint64_t g_tess_lds_next = 0;
+
 struct TessDraw {
     std::uint32_t count = 0, level = 1;
     // Drawn by the host's tessellator, with the hull shader's own
@@ -10035,7 +10046,11 @@ bool tess_ls_pass_locked(const GpuDraw& d, TessDraw& t) {
     // memory. Host-visible only for BBHOST_TESS_DEBUG and
     // BBHOST_DUMP_ON_BRIGHT, which read it back.
     static const bool ring_read_back = std::getenv("BBHOST_TESS_DEBUG") || std::getenv("BBHOST_DUMP_ON_BRIGHT");
-    if (!ring.buffer && !create_dev_buffer(ring, kRingBytes, ring_read_back, ring_read_back)) return false;
+    if (!ring.buffer) {
+        if (!create_dev_buffer(ring, kRingBytes, ring_read_back, ring_read_back)) return false;
+        std::lock_guard<std::mutex> lk(g_tess_lds_mu);
+        g_tess_ring_address = ring.address;
+    }
     if (bytes > kRegionBytes) {
         static std::atomic<int> logs{0};
         if (logs.fetch_add(1) < 4) {
@@ -10067,6 +10082,10 @@ bool tess_ls_pass_locked(const GpuDraw& d, TessDraw& t) {
     }
     t.lds_address = ring.address + static_cast<std::uint64_t>(region - regions) * kRegionBytes + region->off;
     region->off = (region->off + bytes + 255) & ~255ull;
+    {
+        std::lock_guard<std::mutex> lk(g_tess_lds_mu);
+        g_tess_lds_uses[g_tess_lds_next++ % kTessLdsUses] = {g_draw_rec_next, t.lds_address, bytes, t.hull ? t.window : 0u};
+    }
     if (t.hull) {
         // The tessellation constants for one patch, and the hull's user data
         // with their V# in it.
@@ -13115,6 +13134,15 @@ bool dump_rt_locked(RtImage& r, const char* path);
 // that is stuck is very likely holding g.mu: read the draw ring WITHOUT the
 // lock. The values can be torn; a torn line is still better than no report.
 namespace gpu {
+std::string tess_lds_describe(std::uint64_t addr, std::uint64_t precision) {
+    std::lock_guard<std::mutex> lk(g_tess_lds_mu);
+    if (!g_tess_ring_address) return {};
+    TessLdsUse uses[kTessLdsUses];
+    const std::size_t n = static_cast<std::size_t>(std::min<std::uint64_t>(g_tess_lds_next, kTessLdsUses));
+    for (std::size_t k = 0; k < n; ++k) uses[k] = g_tess_lds_uses[(g_tess_lds_next - 1 - k) % kTessLdsUses];  // newest first
+    return tess_lds_where(g_tess_ring_address, kTessRingBytes, kTessRegionBytes, uses, n, addr, precision);
+}
+
 void describe_draw_record(std::uint64_t index) {
     if (index >= g_draw_rec_next || (g_draw_rec_next - index) > kDrawRecs) {
         host_log("    draw %llu is no longer in the ring", static_cast<unsigned long long>(index));
