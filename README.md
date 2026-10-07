@@ -125,7 +125,7 @@ packaging are in [docs/building.md](docs/building.md).
 
 ## Documentation
 
-- [Running](docs/running.md) - configuration, controls, saves, troubleshooting
+- [Running](docs/running.md) - configuration, controls, saves, troubleshooting, the debug menu
 - [Building](docs/building.md) - Linux, Windows, tests, packages
 - [Rendering](docs/rendering.md) - how the graphics work, and what is native
 - [Decompilation](docs/decomp.md) - game functions rewritten as source
