@@ -1,0 +1,158 @@
+# Release binaries: the Windows zip (cross-built in an Arch Linux container,
+# tools/ci_windows.sh), the portable Linux tarball (Ubuntu 24.04 with static
+# libstdc++, tools/ci_build.sh + tools/package_linux.sh) and the playtest kits
+# made from both (tools/package_playtest.sh), with the unstripped binaries for
+# symbolizing crash reports.
+#
+# Push a tag v* to publish them as a GitHub release; "Run workflow" on the
+# Actions page builds the same files as artifacts of the run, no release.
+#
+# The updater (src/host/updater.h) installs the bare executables the publish
+# job adds - bbhost-<version>-windows.exe and bbhost-<version>-linux - and only
+# when SHA256SUMS carries the release key's signature (SHA256SUMS.sig, made
+# with the RELEASE_SIGNING_KEY secret; a tag without the secret fails rather
+# than publish unsigned). The same key signs the official plugins each
+# package carries (tools/package_plugins.sh: plugins/<name>.so|.dll + .sig).
+#
+# The debug menu's font (engine/debug_menu.h) comes from a mod archive that
+# is not in the repository: it is an asset of the pre-release tagged
+# build-assets (GitHub names it Debug.Menu.Restoration.7z - an asset name has
+# no spaces) and the packages carry it; without it they build without the
+# debug menu.
+name: release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/cache@v4
+        with:
+          path: build-ci/prefix
+          key: deps-${{ runner.os }}-${{ hashFiles('tools/ci_build.sh') }}
+      - name: build
+        run: CI_PORTABLE=1 CI_CMAKE_ARGS="-DBBHOST_RELEASE=ON" tools/ci_build.sh
+      - name: debug menu assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          command -v 7z > /dev/null || sudo apt-get install -y -q p7zip-full > /dev/null
+          gh release download build-assets -p 'Debug*Menu*Restoration.7z' -O 'tmp/Debug Menu Restoration.7z' || echo "no build-assets release, no debug menu"
+      - name: package
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: tools/package_linux.sh build-ci/build/bbhost build/linux
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: |
+            build/linux/*.tar.gz
+            build/linux/*.debug
+      - name: logs on failure
+        if: failure()
+        run: tail -n 80 build-ci/*.log || true
+
+  windows:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container: archlinux:latest
+    steps:
+      - name: packages
+        run: pacman -Syu --noconfirm --needed git github-cli 7zip
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: git safe directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: actions/cache@v4
+        with:
+          path: build/win-deps/prefix
+          key: win-deps-${{ hashFiles('tools/win_deps.sh') }}
+      - name: debug menu assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download build-assets -p 'Debug*Menu*Restoration.7z' -O 'tmp/Debug Menu Restoration.7z' || echo "no build-assets release, no debug menu"
+      - name: build and package
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: CI_PACMAN=1 CI_CMAKE_ARGS="-DBBHOST_RELEASE=ON" tools/ci_windows.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            build/win/*.zip
+            build/win/*.debug.exe
+      - name: logs on failure
+        if: failure()
+        run: tail -n 80 build/win-deps/*.log build-win.*.log || true
+
+  publish:
+    needs: [linux, windows]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: playtest kits, the Steam Deck kit and the updater's executables
+        run: |
+          tools/package_playtest.sh dist/windows/*.zip dist/linux/*.tar.gz dist/playtest
+          tools/package_steamdeck.sh dist/linux/*.tar.gz dist/steamdeck
+          mkdir -p dist/release dist/x
+          cp dist/windows/* dist/linux/* dist/playtest/* dist/steamdeck/* dist/release/
+          # The stripped executables out of the packages, under the names the updater asks for.
+          w=$(ls dist/windows/bbhost-win-*.zip); v=$(basename "$w" .zip); v=${v#bbhost-win-}
+          unzip -q -j "$w" "bbhost-win-$v/bbhost.exe" -d dist/x
+          mv dist/x/bbhost.exe "dist/release/bbhost-$v-windows.exe"
+          tar xzf dist/linux/bbhost-linux-$v.tar.gz -C dist/x "bbhost-linux-$v/bbhost"
+          install -m 755 "dist/x/bbhost-linux-$v/bbhost" "dist/release/bbhost-$v-linux"
+          # The official plugins, signed in the packages, as assets of their own:
+          # the plugin manager's "Get the latest official plugins" fetches
+          # bbhost-plugin-<name>-windows.dll / -linux.so and their .sig.
+          unzip -q "$w" "bbhost-win-$v/plugins/*" -d dist/x
+          tar xzf dist/linux/bbhost-linux-$v.tar.gz -C dist/x "bbhost-linux-$v/plugins"
+          for f in dist/x/bbhost-win-$v/plugins/*.dll; do
+            [ -f "$f" ] || continue; n=$(basename "$f" .dll)
+            cp "$f" "dist/release/bbhost-plugin-$n-windows.dll"
+            [ -f "$f.sig" ] && cp "$f.sig" "dist/release/bbhost-plugin-$n-windows.dll.sig"
+          done
+          for f in dist/x/bbhost-linux-$v/plugins/*.so; do
+            [ -f "$f" ] || continue; n=$(basename "$f" .so)
+            cp "$f" "dist/release/bbhost-plugin-$n-linux.so"
+            [ -f "$f.sig" ] && cp "$f.sig" "dist/release/bbhost-plugin-$n-linux.so.sig"
+          done
+          (cd dist/release && sha256sum * > SHA256SUMS)
+          ls -la dist/release
+      - name: sign
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          if [ -z "$RELEASE_SIGNING_KEY" ]; then
+            if [ "${GITHUB_REF#refs/tags/v}" != "$GITHUB_REF" ]; then echo "RELEASE_SIGNING_KEY is not set: a release is never published unsigned"; exit 1; fi
+            echo "RELEASE_SIGNING_KEY is not set: unsigned (no release from this run)"; exit 0
+          fi
+          umask 077
+          printf '%s\n' "$RELEASE_SIGNING_KEY" > "$RUNNER_TEMP/key.pem"
+          openssl pkeyutl -sign -inkey "$RUNNER_TEMP/key.pem" -rawin -in dist/release/SHA256SUMS -out dist/release/SHA256SUMS.sig
+          rm -f "$RUNNER_TEMP/key.pem"
+          echo "signed: $(wc -c < dist/release/SHA256SUMS.sig) bytes"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: dist/release
+      - name: GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/release/* --title "bbhost $GITHUB_REF_NAME" --generate-notes

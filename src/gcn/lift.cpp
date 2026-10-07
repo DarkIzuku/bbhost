@@ -1,0 +1,2442 @@
+// Typed per-pixel lifting of GCN pixel shaders: see lift.h.
+//
+// Execution model. The translated shader runs one invocation per lane and
+// keeps EXEC and VCC as 64-bit masks; everything it reads from another lane
+// comes from a ballot. The lifter represents a 64-bit mask only by this
+// pixel's bit (Kind::Lane) and rejects every use that needs another lane's bit
+// or the mask as a number. What remains is per-pixel arithmetic, which it
+// emits as typed values in a single block:
+//
+//   * A VGPR write under EXEC is select(exec, new, old); where EXEC is known
+//     set it is a plain value.
+//   * An s_cbranch_execz skips its region only when EXEC is clear, where the
+//     masked writes keep their old values anyway. The region is emitted
+//     unconditionally when it has no image, export or memory instruction, does
+//     not change EXEC, and every scalar register it writes is redefined before
+//     it is read afterwards (scalar writes are not masked, and GCN runs a
+//     block once for all lanes when any lane needs it).
+//   * An s_cbranch_scc0 region (the alpha-test kill idiom) is emitted
+//     unconditionally too when SCC was "some lane of mask M is set" and the
+//     region's first instruction ANDs M into EXEC: a pixel whose M bit is
+//     clear writes nothing whether or not the region runs. EXEC after it must
+//     If EXEC after it differs from EXEC at the branch, or the region widens
+//     EXEC to whole quads (s_wqm_b64; the lifted pixel keeps its own bit), the
+//     lift can differ from GCN only in pixels whose M bit is clear: EXEC at
+//     s_endpgm must then be M itself, and no implicit-LOD sample may follow.
+//   * An s_cbranch_scc0/scc1 or s_cbranch_vccz/vccnz whose bit every lane
+//     holds alike becomes structured control flow: SCC from a scalar compare
+//     (scalar operands never read a VGPR), or VCC computed only from
+//     constants, user data and loads. It has a then arm, an else arm where an
+//     s_branch closes the then arm, and a merge whose phis carry the values
+//     the arms left different. An s_branch closing no then arm (a loop) is
+//     rejected.
+//   * Implicit-LOD samples are accepted only outside regions with EXEC known
+//     set. The whole function is then uniform control flow, so Vulkan helper
+//     invocations compute the samples for a quad's uncovered pixels as GCN's
+//     whole-quad lanes do, and helper outputs are discarded. Exports are
+//     unconditional, as in the translator; a pixel whose EXEC bit is clear at
+//     s_endpgm is discarded, and every pixel exported with its bit clear must
+//     be one of them.
+//   * Scalar loads read the storage buffers the reference bound for them
+//     (TranslateResult::buffer_at), with the translator's landing rule: a load
+//     is stored at once and stored again at the next s_waitcnt on lgkmcnt,
+//     within one block. Indexed tbuffer loads read the element the
+//     reference's indexed binding holds, decoded as the translator decodes it.
+//
+// Operations mirror translate.cpp exactly (GLSL.std.450 Fma for mac/mad,
+// NMin/NMax, the legacy multiply's zero rule, PackHalf2x16 exports, the cube
+// helpers and sample operand order), so a lifted shader can be compared with
+// its reference texel for texel.
+#include "gcn/lift.h"
+
+#include "gcn/half.h"
+#include "gcn/spirv.h"
+
+#include <algorithm>
+#include <bit>
+#include <cstdio>
+#include <cstring>
+#include <map>
+#include <set>
+
+namespace gcn {
+namespace {
+
+using spv::Id;
+
+enum class Kind : std::uint8_t { Word, Float, Lane };
+
+struct Val {
+    Kind kind = Kind::Word;
+    Id id = 0;
+    bool constant = false;
+    std::uint32_t bits = 0;  // Word / Float constant
+    bool set = false;        // Lane constant
+};
+
+// Register keys: SGPRs 0..103, TTMPs 200..211, VGPRs 256.., and the scalar
+// state below. EXEC and VCC exist only as lane masks.
+constexpr int kKeyM0 = 124;
+constexpr int kKeyScc = 1000;
+constexpr int kKeyExec = 1001;
+constexpr int kKeyVcc = 1002;
+
+struct Region {
+    std::uint32_t branch = 0, start = 0, end = 0;  // the branch, masked instructions [start, end)
+    std::set<int> scalar_writes;
+    bool closed = false;
+    // s_cbranch_scc0 (kill = true): SCC was "some lane of `guard` is set", and
+    // the region's first instruction ANDs `guard` into EXEC, so a pixel whose
+    // guard bit is clear writes nothing whether or not the region runs.
+    bool kill = false;
+    bool widened = false;     // the AND is followed by s_wqm_b64 exec, exec
+    bool quad_exact = false;  // widened from EXEC known set: every pixel computes the region, as GCN's widened quads do
+    Val guard, exec_before;
+    // EXEC where the region's writes begin (after a kill region's AND and
+    // widening); every EXEC set inside the region must lie within it.
+    Val exec_in;
+    bool disabled = false;  // an s_cbranch_scc0 whose SCC was a scalar condition: an if, not a kill region
+    std::uint64_t seq = 0;  // opening order among regions and ifs
+};
+
+bool is_branch(const Inst& in) { return in.enc == Enc::SOPP && (in.op == 2 || (in.op >= 4 && in.op <= 9)); }
+
+std::string hex_offset(std::uint32_t v) {
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%06x", v);
+    return buf;
+}
+
+std::string key_name(int key) {
+    if (key == kKeyScc) return "scc";
+    if (key == kKeyExec) return "exec";
+    if (key == kKeyVcc) return "vcc";
+    if (key == kKeyM0) return "m0";
+    if (key < 104) return "s" + std::to_string(key);
+    if (key >= 200 && key < 212) return "ttmp" + std::to_string(key - 200);
+    if (key >= 256) return "v" + std::to_string(key - 256);
+    return "?";
+}
+
+class Lifter {
+public:
+    Lifter(const Program& p, const TranslateOptions& o, const TranslateResult& r) : prog(p), opt(o), ref(r) {}
+
+    LiftResult run() {
+        check_program();
+        if (res.rejections.empty()) emit();
+        if (res.rejections.empty()) {
+            res.spirv = m.assemble();
+            finish_proof();
+        } else {
+            res.spirv.clear();
+        }
+        return std::move(res);
+    }
+
+private:
+    const Program& prog;
+    const TranslateOptions& opt;
+    const TranslateResult& ref;
+    LiftResult res;
+    spv::Module m;
+    std::uint32_t cur = 0;
+    std::string note;  // this instruction's writes, for the listing
+
+    // Types and interface
+    Id t_void = 0, t_bool = 0, t_u32 = 0, t_i32 = 0, t_u64 = 0, t_f32 = 0, t_v2f = 0, t_v3f = 0, t_v4f = 0, t_v2i = 0, t_v3i = 0;
+    Id p_uni_u32 = 0, p_in_v4f = 0, p_in_bool = 0, p_out_v4f = 0, p_ssbo_u32 = 0, p_in_u32 = 0, p_in_v4u = 0, t_v4u = 0;
+    Id ubo_var = 0, fn_main = 0;
+    std::vector<Id> interface;
+    std::vector<Id> image_vars, image_types, sampler_vars, buffer_vars;
+    std::map<int, Id> in_params, out_params, attr_loads;
+    std::map<std::uint32_t, Id> in_location_vars;  // PS: location -> the Input vec4 there (attr)
+    Id in_frag_coord = 0, in_front_facing = 0, in_vertex_index = 0, in_instance_index = 0, out_pos = 0;
+    std::map<std::uint32_t, Id> vertex_in_vars;  // TranslateOptions::vertex_input locations
+    std::map<std::uint32_t, Id> bias_loads, stride_loads, w3_loads;  // StageParams cb_bias_dw / cb_stride / cb_w3 per buffer
+    struct PackedPair {
+        Id lo, hi;
+        std::uint32_t block;  // Module::blocks() when packed
+    };
+    std::map<Id, PackedPair> packed_pairs;  // v_cvt_pkrtz_f16_f32's result -> its two floats
+    bool native_rtz = false;  // as the translator (gcn/half.h native_half_rtz)
+    Id t_v2h = 0;
+
+    // Values
+    std::map<int, Val> reg;
+    std::map<int, Val> initials;  // each register's value at entry, loaded once
+    std::map<int, Val> lanes;  // pair low key (or kKeyExec / kKeyVcc) -> this pixel's bit
+    std::map<Id, Id> to_float, to_word;
+    struct Pending {
+        int sdst;
+        std::vector<Val> values;
+    };
+    std::vector<Pending> pending;
+
+    // Control flow
+    std::vector<Region> regions;
+    std::set<std::uint32_t> block_starts;
+    std::vector<Region*> open_regions;  // innermost last
+    // s_cbranch_scc0/scc1 or s_cbranch_vccz/vccnz over a then arm, with an else
+    // arm where an s_branch closes the then arm. check_program finds them;
+    // emit() opens those whose tested bit every lane holds alike.
+    struct Construct {
+        std::uint32_t branch = 0;
+        std::uint16_t op = 4;          // s_cbranch_scc0/scc1 (4/5) or s_cbranch_vccz/vccnz (6/7)
+        bool negate = false;           // scc1/vccnz: taken where the bit is set, so the then arm runs where it is clear
+        std::uint32_t else_jump = 0;   // the s_branch closing the then arm; 0 without an else arm
+        std::uint32_t else_start = 0;  // the branch target: the else arm, or the join without one
+        std::uint32_t join = 0;
+    };
+    std::vector<Construct> constructs;
+    struct Arm {  // an open if
+        Construct* c = nullptr;
+        std::uint64_t seq = 0;
+        Id merge = 0, then_label = 0, else_label = 0, then_end = 0;
+        bool in_else = false;
+        std::map<int, Val> reg0, lanes0, reg1, lanes1;  // at the branch; at the then arm's end
+        std::map<Id, Id> to_float0, to_word0;
+        Val scc0, scc1v;
+        bool scc_uniform0 = false, scc_valid0 = true, scc_uniform1 = false, scc_valid1 = true;
+        std::set<int> poisoned0, poisoned1;
+    };
+    std::vector<Arm> arms;  // innermost last
+    Id cur_label = 0;
+    bool scc_uniform = false;  // scc_mask is SCC itself, from a scalar compare, not "some lane of a mask"
+    bool scc_valid = true;     // false after an if whose arms left SCC different
+    std::size_t if_constructs = 0;
+    // SGPRs an if left holding a lane mask on one arm only: unknown after the
+    // join, so reading them is rejected until they are written again.
+    std::set<int> poisoned;
+
+    // Proof bookkeeping
+    std::vector<std::uint32_t> samples, exports;
+    std::size_t buffer_loads = 0, masked_writes = 0;
+
+    // SCC as the translator leaves it after a 64-bit mask op: some lane of
+    // scc_mask is set.
+    Val scc_mask;
+    bool exec_write_ok = false;             // this instruction is a kill region's EXEC mask, widening or restore
+    bool widen_ok = false;                  // ... and it is the widening s_wqm_b64
+    // Kill regions after which the lift may differ from GCN in pixels whose
+    // guard bit is clear: per pixel (derivatives could see them), or only in
+    // quads where no pixel survives.
+    struct KillProof {
+        Val guard;
+        bool per_pixel;
+    };
+    std::vector<KillProof> kill_proofs;
+    std::vector<Val> export_execs;          // EXEC at exports where it was not known set
+    std::map<Id, std::set<Id>> conjuncts;   // the operands of each lane mask built by LogicalAnd
+    // Values every lane holds alike: built only from constants, user data,
+    // scalar loads and other such values (scalar operands never read a VGPR).
+    // An instruction's results are uniform when everything it read was.
+    std::set<Id> uniform_ids;
+    bool inst_uniform = true;
+    bool uniform(const Val& v) const { return v.constant || uniform_ids.count(v.id) != 0; }
+    Val note_read(const Val& v) {
+        if (!uniform(v)) inst_uniform = false;
+        return v;
+    }
+    void note_result(const Val& v) {
+        if (inst_uniform && !v.constant) uniform_ids.insert(v.id);
+    }
+    bool needs_kill = false;                // EXEC not known set at s_endpgm
+    Val kill_exec;
+    std::size_t kill_regions = 0;
+
+    void reject(const std::string& why) {
+        const std::string msg = hex_offset(cur) + ": " + why;
+        if (std::find(res.rejections.begin(), res.rejections.end(), msg) == res.rejections.end()) res.rejections.push_back(msg);
+    }
+
+    // ---- program checks ------------------------------------------------------------
+    void check_program() {
+        if (opt.stage != Stage::Pixel && opt.stage != Stage::Vertex) reject("only pixel and vertex shaders are lifted");
+        if (!opt.cb_no_fallback) reject("the reference must be the no-fallback translation (every storage buffer bound)");
+        if (opt.debug_ps) reject("debug pixel-output modes are not lifted");
+        if (opt.fetch) reject("an inlined fetch shader is not lifted (vertex shaders are lifted on vertex input)");
+        if (!ref.ok()) reject("the reference translation failed");
+        if (!prog.errors.empty()) reject("the program has decode errors");
+        if (prog.insts.empty()) reject("empty program");
+        if (!res.rejections.empty()) return;
+        const Inst& last = prog.insts.back();
+        if (!(last.enc == Enc::SOPP && last.op == 1)) {
+            cur = last.offset;
+            reject("the program does not end in s_endpgm");
+        }
+        const std::uint32_t end = last.offset + last.size * 4;
+        for (const Inst& in : prog.insts) {
+            cur = in.offset;
+            // s_swappc_b64 calls the fetch shader; with vertex input a vertex
+            // shader loads its elements there instead (translate.cpp vertex_input_call).
+            const bool vertex_input_call = in.enc == Enc::SOP1 && in.op == 33 && opt.stage == Stage::Vertex && !opt.vertex_input.empty();
+            if (in.enc == Enc::SOP1 && (in.op == 32 || in.op == 33) && !vertex_input_call) reject("program-counter transfer");
+            if (in.enc == Enc::SOPP && in.op == 1 && &in != &last) reject("s_endpgm before the end of the program");
+            if (!is_branch(in)) continue;
+            const std::uint32_t target = in.offset + 4 + static_cast<std::uint32_t>(in.imm) * 4;
+            if (target <= in.offset || target > end) {
+                reject(std::string(mnemonic(in)) + " must branch forward within the program");
+            } else if (in.op == 2) {
+                continue;  // it must close an if's then arm (checked below)
+            } else if (in.op >= 4 && in.op <= 7) {
+                if (target == in.offset + 4) {
+                    reject(std::string(mnemonic(in)) + " branches over nothing");
+                    continue;
+                }
+                Construct c;
+                c.branch = in.offset;
+                c.op = in.op;
+                c.negate = in.op == 5 || in.op == 7;
+                c.else_start = target;
+                c.join = target;
+                if (const Inst* jump = inst_at(target - 4); jump && jump->enc == Enc::SOPP && jump->op == 2) {
+                    const std::uint32_t join = jump->offset + 4 + static_cast<std::uint32_t>(jump->imm) * 4;
+                    if (join > target && join < end) {
+                        c.else_jump = jump->offset;
+                        c.join = join;
+                    }
+                }
+                constructs.push_back(c);
+                block_starts.insert(in.offset + 4);
+                block_starts.insert(c.else_start);
+                block_starts.insert(c.join);
+                // Without an else arm, an s_cbranch_scc0 on a mask's SCC is a kill
+                // region instead; emit() decides at the branch, by what SCC holds.
+                if (in.op == 4 && !c.else_jump && opt.stage == Stage::Pixel) {
+                    Region r;
+                    r.kill = true;
+                    r.branch = in.offset;
+                    r.start = in.offset + 4;
+                    r.end = target;
+                    regions.push_back(r);
+                }
+            } else if (in.op != 8) {
+                reject(std::string(mnemonic(in)) + ": only s_cbranch_execz, s_cbranch_scc0/scc1, s_cbranch_vccz/vccnz and an else arm's s_branch are lifted");
+            } else {
+                Region r;
+                r.branch = in.offset;
+                r.start = in.offset + 4;
+                r.end = target;
+                regions.push_back(r);
+                block_starts.insert(r.start);
+                block_starts.insert(r.end);
+            }
+        }
+        std::set<std::uint32_t> else_jumps;
+        for (const Construct& c : constructs) {
+            if (c.else_jump && !else_jumps.insert(c.else_jump).second) {
+                cur = c.branch;
+                reject("two ifs share the s_branch at " + hex_offset(c.else_jump));
+            }
+        }
+        for (const Inst& in : prog.insts) {
+            if (in.enc == Enc::SOPP && in.op == 2 && !else_jumps.count(in.offset)) {
+                cur = in.offset;
+                reject("s_branch that does not close an if's then arm (loops are not lifted)");
+            }
+        }
+        std::sort(regions.begin(), regions.end(), [](const Region& a, const Region& b) { return a.start < b.start; });
+        for (std::size_t k = 0; k < regions.size(); ++k) {
+            const Region& inner = regions[k];
+            for (std::size_t j = 0; j < k; ++j) {
+                const Region& outer = regions[j];
+                // An s_cbranch_execz region may sit wholly inside another: where
+                // the outer one is skipped, EXEC is clear at the inner branch too.
+                // (A kill region inside another region is rejected at its branch.)
+                if (inner.start < outer.end && inner.end > outer.end) {
+                    cur = inner.branch;
+                    reject("overlapping regions");
+                }
+            }
+        }
+        // Ifs nest with regions and with each other: anything overlapping an if
+        // lies inside one of its arms or contains it.
+        const auto within = [](std::uint32_t a0, std::uint32_t a1, std::uint32_t b0, std::uint32_t b1) { return b0 <= a0 && a1 <= b1; };
+        for (const Construct& c : constructs) {
+            const auto nests = [&](std::uint32_t x0, std::uint32_t x1) {
+                return x1 <= c.branch || x0 >= c.join || within(x0, x1, c.branch + 4, c.else_jump ? c.else_jump : c.join) ||
+                       (c.else_jump && within(x0, x1, c.else_start, c.join)) || within(c.branch, c.join, x0, x1);
+            };
+            for (const Region& r : regions) {
+                if (r.branch != c.branch && !nests(r.branch, r.end)) {
+                    cur = r.branch;
+                    reject("a region overlaps the if at " + hex_offset(c.branch));
+                }
+            }
+            for (const Construct& o : constructs) {
+                if (&o != &c && !nests(o.branch, o.join)) {
+                    cur = o.branch;
+                    reject("the ifs at " + hex_offset(c.branch) + " and " + hex_offset(o.branch) + " overlap");
+                }
+            }
+        }
+    }
+
+    // ---- values ----------------------------------------------------------------------
+    Id cf(float v) { return m.const_f32(v); }
+    Id cu(std::uint32_t v) { return m.const_u32(v); }
+    Val word_const(std::uint32_t b) { return {Kind::Word, cu(b), true, b, false}; }
+    Val float_const(float f) { return {Kind::Float, cf(f), true, std::bit_cast<std::uint32_t>(f), false}; }
+    Val lane_const(bool b) { return {Kind::Lane, m.const_bool(b), true, 0, b}; }
+    static Val word(Id id) { return {Kind::Word, id, false, 0, false}; }
+    static Val flt(Id id) { return {Kind::Float, id, false, 0, false}; }
+    static Val lane(Id id) { return {Kind::Lane, id, false, 0, false}; }
+
+    Id as_f(const Val& v) {
+        if (v.kind == Kind::Float) return v.id;
+        if (v.kind == Kind::Lane) {
+            reject("a lane mask is used as a number");
+            return cf(0.0f);
+        }
+        if (v.constant) return cf(std::bit_cast<float>(v.bits));
+        if (auto it = to_float.find(v.id); it != to_float.end()) return it->second;
+        const Id r = m.emit(spv::OpBitcast, t_f32, {v.id});
+        to_float[v.id] = r;
+        to_word[r] = v.id;
+        return r;
+    }
+    Id as_u(const Val& v) {
+        if (v.kind == Kind::Word) return v.id;
+        if (v.kind == Kind::Lane) {
+            reject("a lane mask is used as a number");
+            return cu(0);
+        }
+        if (v.constant) return cu(v.bits);
+        if (auto it = to_word.find(v.id); it != to_word.end()) return it->second;
+        const Id r = m.emit(spv::OpBitcast, t_u32, {v.id});
+        to_word[v.id] = r;
+        to_float[r] = v.id;
+        return r;
+    }
+    Id as_b(const Val& v) {
+        if (v.kind != Kind::Lane) {
+            reject("a number is used as a lane mask");
+            return m.const_bool(false);
+        }
+        return v.id;
+    }
+
+    Val band(const Val& a, const Val& b) {
+        if (a.constant) return a.set ? b : lane_const(false);
+        if (b.constant) return b.set ? a : lane_const(false);
+        const Id r = m.emit(spv::OpLogicalAnd, t_bool, {a.id, b.id});
+        std::set<Id>& c = conjuncts[r];
+        for (const Val* x : {&a, &b}) {
+            c.insert(x->id);
+            if (const auto it = conjuncts.find(x->id); it != conjuncts.end()) c.insert(it->second.begin(), it->second.end());
+        }
+        return lane(r);
+    }
+    static bool same_lane(const Val& a, const Val& b) {
+        return a.kind == Kind::Lane && b.kind == Kind::Lane && a.constant == b.constant && (a.constant ? a.set == b.set : a.id == b.id);
+    }
+    // Every pixel whose `e` bit is set has its `g` bit set.
+    bool implies(const Val& e, const Val& g) const {
+        if (g.constant) return g.set || (e.constant && !e.set);
+        if (e.constant) return !e.set;
+        if (e.id == g.id) return true;
+        const auto it = conjuncts.find(e.id);
+        return it != conjuncts.end() && it->second.count(g.id) != 0;
+    }
+    Val bor(const Val& a, const Val& b) {
+        if (a.constant) return a.set ? lane_const(true) : b;
+        if (b.constant) return b.set ? lane_const(true) : a;
+        return lane(m.emit(spv::OpLogicalOr, t_bool, {a.id, b.id}));
+    }
+    Val bnot(const Val& a) { return a.constant ? lane_const(!a.set) : lane(m.emit(spv::OpLogicalNot, t_bool, {a.id})); }
+    Val bxor(const Val& a, const Val& b) {
+        if (a.constant) return a.set ? bnot(b) : b;
+        if (b.constant) return b.set ? bnot(a) : a;
+        return lane(m.emit(spv::OpLogicalNotEqual, t_bool, {a.id, b.id}));
+    }
+
+    Id fadd(Id a, Id b) { return m.emit(spv::OpFAdd, t_f32, {a, b}); }
+    Id fsub(Id a, Id b) { return m.emit(spv::OpFSub, t_f32, {a, b}); }
+    Id fmul(Id a, Id b) { return m.emit(spv::OpFMul, t_f32, {a, b}); }
+    Id fdiv(Id a, Id b) { return m.emit(spv::OpFDiv, t_f32, {a, b}); }
+    Id fneg(Id a) { return m.emit(spv::OpFNegate, t_f32, {a}); }
+    Id fsel(Id c, Id a, Id b) { return m.emit(spv::OpSelect, t_f32, {c, a, b}); }
+    Id ext(spv::Glsl op, const std::vector<Id>& args, Id type = 0) { return m.ext_inst(type ? type : t_f32, op, args); }
+    Id feq(Id a, Id b) { return m.emit(spv::OpFOrdEqual, t_bool, {a, b}); }
+    Id fge(Id a, Id b) { return m.emit(spv::OpFOrdGreaterThanEqual, t_bool, {a, b}); }
+    Id extract(Id type, Id v, std::uint32_t k) { return m.emit(spv::OpCompositeExtract, type, {v, k}); }
+    Id ibin(spv::Op op, Id a, Id b) { return m.emit(op, t_u32, {a, b}); }
+    Id to_i(Id a) { return m.emit(spv::OpBitcast, t_i32, {a}); }
+    Id from_i(Id a) { return m.emit(spv::OpBitcast, t_u32, {a}); }
+    Id shift(spv::Op op, Id a, Id b) { return ibin(op, a, ibin(spv::OpBitwiseAnd, b, cu(31))); }  // the translator's shl/shr/sar
+    Id sext24(Id a) { return from_i(m.emit(spv::OpBitFieldSExtract, t_i32, {to_i(a), cu(0), cu(24)})); }
+    Id zext24(Id a) { return ibin(spv::OpBitwiseAnd, a, cu(0xffffff)); }
+    Id is_nan(Id a) { return m.emit(spv::OpIsNan, t_bool, {a}); }
+    Id ieq(Id a, Id b) { return m.emit(spv::OpIEqual, t_bool, {a, b}); }
+
+    // ---- registers -------------------------------------------------------------------
+    int user_sgpr_count() const { return std::min(static_cast<int>((opt.rsrc2 >> 1) & 0x1f), 16); }
+
+    Val initial(int key) {
+        if (key < user_sgpr_count()) {
+            const Id p = m.access_chain(p_uni_u32, ubo_var, {cu(2), cu(static_cast<std::uint32_t>(key / 4)), cu(static_cast<std::uint32_t>(key % 4))});
+            return word(m.load(t_u32, p));
+        }
+        if (key >= 256 && opt.stage == Stage::Vertex) {
+            // The vertex index in v0, the instance index in v1 up to VGPR_COMP_CNT (translate.cpp, run()).
+            const int comp = static_cast<int>((opt.rsrc1 >> 24) & 3);
+            if (key == 256) {
+                if (!in_vertex_index) in_vertex_index = builtin(p_in_u32, spv::BiVertexIndex);
+                return word(m.load(t_u32, in_vertex_index));
+            }
+            if (key - 256 <= comp) {
+                if (!in_instance_index) in_instance_index = builtin(p_in_u32, spv::BiInstanceIndex);
+                return word(m.load(t_u32, in_instance_index));
+            }
+            return word_const(0);
+        }
+        if (key >= 256) {
+            // The PS inputs the translator places in VGPRs (translate.cpp, run()).
+            int v = 0;
+            const std::uint32_t ena = opt.ps_input_ena;
+            for (const auto [bit, n] : {std::pair{1u, 2}, {2u, 2}, {4u, 2}, {8u, 3}, {0x10u, 2}, {0x20u, 2}, {0x40u, 2}, {0x80u, 1}}) {
+                if (ena & bit) v += n;
+            }
+            for (int k = 0; k < 4; ++k) {
+                if (!(ena & (0x100u << k))) continue;
+                if (key - 256 == v++) {
+                    if (!in_frag_coord) {
+                        in_frag_coord = builtin(p_in_v4f, spv::BiFragCoord);
+                    }
+                    Id c = extract(t_f32, m.load(t_v4f, in_frag_coord), static_cast<std::uint32_t>(k));
+                    if (k == 3) c = fdiv(cf(1.0f), c);
+                    return flt(c);
+                }
+            }
+            if (ena & 0x1000) {
+                if (key - 256 == v++) {
+                    if (!in_front_facing) in_front_facing = builtin(p_in_bool, spv::BiFrontFacing);
+                    return word(m.emit(spv::OpSelect, t_u32, {m.load(t_bool, in_front_facing), cu(0xffffffffu), cu(0)}));
+                }
+            }
+        }
+        return word_const(0);
+    }
+    // Loads of inputs, uniforms and parameters go to the entry block, so they
+    // dominate every block that reads them.
+    struct EntryScope {
+        spv::Module& mod;
+        bool prev;
+        explicit EntryScope(spv::Module& module) : mod(module), prev(module.emitting_to_entry()) { mod.emit_to_entry(true); }
+        ~EntryScope() { mod.emit_to_entry(prev); }
+    };
+    Val initial_value(int key) {
+        auto init = initials.find(key);
+        if (init == initials.end()) {
+            EntryScope entry(m);
+            init = initials.emplace(key, initial(key)).first;
+            if (key < 256 && !init->second.constant) uniform_ids.insert(init->second.id);  // user data: every lane alike
+        }
+        return init->second;
+    }
+    Val& value(int key) {
+        auto it = reg.find(key);
+        if (it == reg.end()) it = reg.emplace(key, initial_value(key)).first;
+        note_read(it->second);
+        return it->second;
+    }
+    static int scalar_key(std::uint16_t code) {
+        if (code < 104) return code;
+        if (code >= 112 && code < 124) return 200 + code - 112;
+        if (code == kM0) return kKeyM0;
+        return -1;
+    }
+    bool holds_lane(int key) const { return lanes.count(key) || (key > 0 && key < 104 && lanes.count(key - 1)); }
+
+    Val read(std::uint16_t code, const Inst& in) {
+        if (code >= 256) return value(code);
+        if (const int key = scalar_key(code); key >= 0) {
+            if (holds_lane(key)) reject(key_name(key) + " holds a lane mask and is read as a word");
+            if (poisoned.count(key)) reject(key_name(key) + " is read after an if that left a lane mask in it on one arm only");
+            return value(key);
+        }
+        if (code == kLiteral) return word_const(in.literal);
+        if (code == 128) return word_const(0);
+        if (code >= 129 && code <= 192) return word_const(code - 128u);
+        if (code >= 193 && code <= 208) return word_const(static_cast<std::uint32_t>(-static_cast<int>(code - 192)));
+        if (code >= 108 && code <= 111) return word_const(0);  // tba/tma, as the translator
+        static const float kHalf[8] = {0.5f, -0.5f, 1.0f, -1.0f, 2.0f, -2.0f, 4.0f, -4.0f};
+        if (code >= 240 && code <= 247) return float_const(kHalf[code - 240]);
+        reject("unsupported operand " + operand_name(code, in.literal));
+        return word_const(0);
+    }
+    void write_scalar(std::uint16_t code, const Val& v) {
+        if (v.kind == Kind::Lane) {
+            reject("a lane mask is stored as a word");
+            return;
+        }
+        if (code == kVccLo || code == kVccHi) {
+            // The words of VCC are not tracked: its lane bit is unknown until
+            // a comparison writes it again.
+            lanes.erase(kKeyVcc);
+            note_region_write(kKeyVcc);
+            note += " vcc:unknown";
+            return;
+        }
+        if (code == kExecLo || code == kExecHi) {
+            reject("a word written into EXEC");
+            return;
+        }
+        if (code >= 108 && code <= 111) return;
+        const int key = scalar_key(code);
+        if (key < 0) {
+            reject("unsupported scalar destination " + operand_name(code));
+            return;
+        }
+        lanes.erase(key);
+        if (key > 0 && key < 104) lanes.erase(key - 1);
+        poisoned.erase(key);
+        reg[key] = v;
+        note_result(v);
+        note_region_write(key);
+        note += " " + key_name(key) + (v.kind == Kind::Float ? ":f32" : ":u32");
+    }
+    Val exec_lane() {
+        auto it = lanes.find(kKeyExec);
+        if (it == lanes.end()) {
+            reject("EXEC is not a known per-pixel mask");
+            return lane_const(true);
+        }
+        return note_read(it->second);
+    }
+    Val read_lane(std::uint16_t code) {
+        int key = -1;
+        if (code == kExecLo) key = kKeyExec;
+        else if (code == kVccLo) key = kKeyVcc;
+        else if (code < 104) key = code;
+        else if (code == 128) return lane_const(false);
+        else if (code == 193) return lane_const(true);  // -1: every lane
+        if (key >= 0) {
+            if (poisoned.count(key)) reject(key_name(key) + " is read as a lane mask after an if that left one in it on one arm only");
+            if (auto it = lanes.find(key); it != lanes.end()) return note_read(it->second);
+            reject((key == kKeyVcc ? std::string("vcc") : operand_name(code)) + " is read as a lane mask but does not hold one");
+        } else {
+            reject("unsupported 64-bit mask operand " + operand_name(code));
+        }
+        return lane_const(false);
+    }
+    void write_lane(std::uint16_t code, const Val& v) {
+        if (v.kind != Kind::Lane) {
+            reject("a word written into a lane mask");
+            return;
+        }
+        int key = -1;
+        if (code == kExecLo) {
+            // Skipped, a region leaves EXEC as it was; where a set EXEC lies within
+            // EXEC at the region's start, the pixels it was clear for agree.
+            for (const Region* r : open_regions) {
+                if (exec_write_ok || implies(v, r->exec_in)) continue;
+                reject("EXEC inside the region at " + hex_offset(r->start) + " is set beyond EXEC where the region's writes begin");
+                break;
+            }
+            key = kKeyExec;
+        } else if (code == kVccLo) {
+            key = kKeyVcc;
+        } else if (code < 103) {
+            key = code;
+            reg.erase(code);
+            reg.erase(code + 1);
+            poisoned.erase(code);
+            poisoned.erase(code + 1);
+            lanes.erase(code - 1);
+            lanes.erase(code + 1);
+        } else {
+            reject("unsupported 64-bit mask destination " + operand_name(code));
+            return;
+        }
+        lanes[key] = v;
+        note_result(v);
+        note_region_write(key);
+        if (code < 104) note_region_write(code + 1);
+        note += " " + (key == kKeyExec ? std::string("exec") : key == kKeyVcc ? std::string("vcc") : operand_name(code)) + ":lane";
+    }
+    // A VGPR write under EXEC.
+    void write_v(int idx, const Val& v) {
+        if (v.kind == Kind::Lane) {
+            reject("a lane mask stored into a VGPR");
+            return;
+        }
+        const Val e = exec_lane();
+        const int key = 256 + idx;
+        if (e.constant) {
+            if (e.set) {
+                reg[key] = v;
+                note_result(v);
+            }
+            note += " v" + std::to_string(idx) + (e.set ? (v.kind == Kind::Float ? ":f32" : ":u32") : ":masked-off");
+            return;
+        }
+        const Val old = value(key);
+        ++masked_writes;
+        if (v.kind == Kind::Float || old.kind == Kind::Float) {
+            reg[key] = flt(fsel(e.id, as_f(v), as_f(old)));
+        } else {
+            reg[key] = word(m.emit(spv::OpSelect, t_u32, {e.id, as_u(v), as_u(old)}));
+        }
+        note_result(reg[key]);
+        note += " v" + std::to_string(idx) + ":select";
+    }
+    void note_region_write(int key) {
+        for (Region* r : open_regions) r->scalar_writes.insert(key);
+    }
+    void set_scc_mask(const Val& v) {
+        scc_mask = v;
+        scc_uniform = false;
+        scc_valid = true;
+        note_region_write(kKeyScc);
+    }
+    void set_scc_bool(const Val& b) {  // a scalar compare: SCC is the condition itself
+        scc_mask = b;
+        scc_uniform = true;
+        scc_valid = true;
+        note_region_write(kKeyScc);
+    }
+
+    // ---- interface -------------------------------------------------------------------
+    Id builtin(Id ptr_type, spv::BuiltIn bi) {
+        const Id var = m.global_variable(ptr_type, spv::ScInput);
+        m.decorate(var, spv::DecBuiltIn, {static_cast<std::uint32_t>(bi)});
+        if (opt.stage == Stage::Pixel && bi != spv::BiFragCoord) m.decorate(var, spv::DecFlat);  // vertex inputs take none
+        interface.push_back(var);
+        return var;
+    }
+    Id attr(int a) {
+        if (auto it = attr_loads.find(a); it != attr_loads.end()) return it->second;
+        Id var;
+        if (auto it = in_params.find(a); it != in_params.end()) {
+            var = it->second;
+        } else {
+            const std::uint32_t location = static_cast<std::size_t>(a) < opt.ps_input_map.size() ? opt.ps_input_map[a] : static_cast<std::uint32_t>(a);
+            if (auto at = in_location_vars.find(location); at != in_location_vars.end()) {
+                var = at->second;  // as translate.cpp in_param: one Input variable a location
+            } else {
+                var = m.global_variable(p_in_v4f, spv::ScInput);
+                m.decorate(var, spv::DecLocation, {location});
+                if ((opt.ps_flat_mask >> a) & 1) m.decorate(var, spv::DecFlat);
+                m.name(var, "attr" + std::to_string(a));
+                interface.push_back(var);
+                in_location_vars[location] = var;
+            }
+            in_params[a] = var;
+        }
+        // Inputs do not change: one load per attribute serves every read.
+        EntryScope entry(m);
+        return attr_loads[a] = m.load(t_v4f, var);
+    }
+    Id out_position() {  // translate.cpp exp, pos0
+        if (!out_pos) {
+            out_pos = m.global_variable(p_out_v4f, spv::ScOutput);
+            m.decorate(out_pos, spv::DecBuiltIn, {static_cast<std::uint32_t>(spv::BiPosition)});
+            if (opt.invariant_position) m.decorate(out_pos, spv::DecInvariant);
+            interface.push_back(out_pos);
+        }
+        return out_pos;
+    }
+    Id out_param(int n) {
+        if (auto it = out_params.find(n); it != out_params.end()) return it->second;
+        const Id var = m.global_variable(p_out_v4f, spv::ScOutput);
+        m.decorate(var, spv::DecLocation, {static_cast<std::uint32_t>(n)});
+        m.name(var, (opt.stage == Stage::Pixel ? "mrt" : "param") + std::to_string(n));
+        interface.push_back(var);
+        return out_params[n] = var;
+    }
+    std::vector<Id> param_outputs(int n) {  // translate.cpp param_outputs
+        if (opt.stage != Stage::Vertex || !opt.link_outputs) return {out_param(n)};
+        std::vector<Id> vars;
+        for (std::size_t k = 0; k < opt.output_links.size(); ++k) {
+            if (opt.output_links[k] == n) vars.push_back(out_param(static_cast<int>(k)));
+        }
+        return vars;
+    }
+
+    // ---- instructions ----------------------------------------------------------------
+    struct Mods {
+        std::uint8_t abs = 0, neg = 0, omod = 0;
+        bool clamp = false;
+    };
+    Id src_f(const Val& raw, int k, const Mods& md) {
+        Id v = as_f(raw);
+        if (md.abs & (1 << k)) v = ext(spv::GlslFAbs, {v});
+        if (md.neg & (1 << k)) v = fneg(v);
+        return v;
+    }
+    Val result_f(Id v, const Mods& md) {
+        if (md.omod == 1) v = fmul(v, cf(2.0f));
+        if (md.omod == 2) v = fmul(v, cf(4.0f));
+        if (md.omod == 3) v = fmul(v, cf(0.5f));
+        if (md.clamp) v = ext(spv::GlslFClamp, {v, cf(0.0f), cf(1.0f)});
+        return flt(v);
+    }
+    // One 16-bit half, decoded exactly as the translator decodes it (gcn/half.h).
+    Id unpack_half(Id h) { return emit_unpack_half16(m, {t_bool, t_u32, t_i32, t_f32}, h); }
+    Id mul_legacy(Id a, Id b) {  // as the translator writes it (translate.cpp mul_legacy)
+        if (legacy_mul_min_form()) return fsel(feq(ext(spv::GlslNMin, {ext(spv::GlslFAbs, {a}), ext(spv::GlslFAbs, {b})}), cf(0.0f)), cf(0.0f), fmul(a, b));
+        const Id zero = m.emit(spv::OpLogicalOr, t_bool, {feq(a, cf(0.0f)), feq(b, cf(0.0f))});
+        return fsel(zero, cf(0.0f), fmul(a, b));
+    }
+    Id clamp_inf(Id v) {
+        const Id inf = m.emit(spv::OpIsInf, t_bool, {v});
+        return fsel(inf, fmul(ext(spv::GlslFSign, {v}), cf(3.4028235e38f)), v);
+    }
+
+    // `mask`: v_cndmask's select or the carry in, from src2 (VOP3); VCC otherwise.
+    // `carry_out`: the pair the carry-out ops write (VOP3 sdst, else VCC).
+    bool vop2(std::uint32_t op, const Inst& in, const Val& s0, const Val& s1, const Mods& md, const Val* mask, std::uint16_t carry_out) {
+        const auto F0 = [&] { return src_f(s0, 0, md); };
+        const auto F1 = [&] { return src_f(s1, 1, md); };
+        const auto out_f = [&](Id v) { write_v(in.dst, result_f(v, md)); return true; };
+        const auto out_u = [&](Id v) { write_v(in.dst, word(v)); return true; };
+        const auto carry = [&](Id c) { write_lane(carry_out, band(lane(c), exec_lane())); };  // the translator's ballot of carry & EXEC
+        const auto vdst = [&] { return as_f(value(256 + in.dst)); };
+        switch (op) {
+        case 0: {  // v_cndmask_b32
+            const Val bit = mask ? *mask : read_lane(kVccLo);
+            if (bit.kind != Kind::Lane) return true;
+            if (bit.constant) {
+                write_v(in.dst, bit.set ? s1 : s0);
+            } else if (s0.kind == Kind::Float || s1.kind == Kind::Float) {
+                write_v(in.dst, flt(fsel(bit.id, as_f(s1), as_f(s0))));
+            } else {
+                write_v(in.dst, word(m.emit(spv::OpSelect, t_u32, {bit.id, as_u(s1), as_u(s0)})));
+            }
+            return true;
+        }
+        case 3: return out_f(fadd(F0(), F1()));
+        case 4: return out_f(fsub(F0(), F1()));
+        case 5: return out_f(fsub(F1(), F0()));
+        case 6: return out_f(fadd(mul_legacy(F0(), F1()), vdst()));
+        case 7: return out_f(mul_legacy(F0(), F1()));
+        case 8: return out_f(fmul(F0(), F1()));
+        case 9: return out_u(ibin(spv::OpIMul, sext24(as_u(s0)), sext24(as_u(s1))));  // v_mul_i32_i24
+        case 10: {                                                                    // v_mul_hi_i32_i24
+            const Id a = to_i(sext24(as_u(s0))), b = to_i(sext24(as_u(s1)));
+            return out_u(from_i(extract(t_i32, m.emit(spv::OpSMulExtended, m.type_struct({t_i32, t_i32}), {a, b}), 1)));
+        }
+        case 11: return out_u(ibin(spv::OpIMul, zext24(as_u(s0)), zext24(as_u(s1))));  // v_mul_u32_u24
+        case 12: {                                                                    // v_mul_hi_u32_u24
+            const Id a = zext24(as_u(s0)), b = zext24(as_u(s1));
+            return out_u(extract(t_u32, m.emit(spv::OpUMulExtended, m.type_struct({t_u32, t_u32}), {a, b}), 1));
+        }
+        case 13: case 15: return out_f(ext(spv::GlslNMin, {F0(), F1()}));
+        case 14: case 16: return out_f(ext(spv::GlslNMax, {F0(), F1()}));
+        case 17: return out_u(from_i(ext(spv::GlslSMin, {to_i(as_u(s0)), to_i(as_u(s1))}, t_i32)));
+        case 18: return out_u(from_i(ext(spv::GlslSMax, {to_i(as_u(s0)), to_i(as_u(s1))}, t_i32)));
+        case 19: return out_u(ext(spv::GlslUMin, {as_u(s0), as_u(s1)}, t_u32));
+        case 20: return out_u(ext(spv::GlslUMax, {as_u(s0), as_u(s1)}, t_u32));
+        case 21: return out_u(shift(spv::OpShiftRightLogical, as_u(s0), as_u(s1)));
+        case 22: return out_u(shift(spv::OpShiftRightLogical, as_u(s1), as_u(s0)));
+        case 23: return out_u(shift(spv::OpShiftRightArithmetic, as_u(s0), as_u(s1)));
+        case 24: return out_u(shift(spv::OpShiftRightArithmetic, as_u(s1), as_u(s0)));
+        case 25: return out_u(shift(spv::OpShiftLeftLogical, as_u(s0), as_u(s1)));
+        case 26: return out_u(shift(spv::OpShiftLeftLogical, as_u(s1), as_u(s0)));
+        case 27: write_v(in.dst, word(m.emit(spv::OpBitwiseAnd, t_u32, {as_u(s0), as_u(s1)}))); return true;
+        case 28: write_v(in.dst, word(m.emit(spv::OpBitwiseOr, t_u32, {as_u(s0), as_u(s1)}))); return true;
+        case 29: write_v(in.dst, word(m.emit(spv::OpBitwiseXor, t_u32, {as_u(s0), as_u(s1)}))); return true;
+        case 30: {  // v_bfm_b32
+            const Id ones = ibin(spv::OpISub, shift(spv::OpShiftLeftLogical, cu(1), ibin(spv::OpBitwiseAnd, as_u(s0), cu(31))), cu(1));
+            return out_u(shift(spv::OpShiftLeftLogical, ones, ibin(spv::OpBitwiseAnd, as_u(s1), cu(31))));
+        }
+        case 31: return out_f(ext(spv::GlslFma, {F0(), F1(), vdst()}));                   // v_mac_f32
+        case 32: return out_f(ext(spv::GlslFma, {F0(), as_f(word_const(in.literal)), F1()}));  // v_madmk_f32
+        case 33: return out_f(ext(spv::GlslFma, {F0(), F1(), as_f(word_const(in.literal))}));  // v_madak_f32
+        case 34: return out_u(ibin(spv::OpIAdd, m.emit(spv::OpBitCount, t_u32, {as_u(s0)}), as_u(s1)));  // v_bcnt_u32_b32
+        case 37: case 38: case 39: {  // v_add_i32 / v_sub_i32 / v_subrev_i32 with carry out
+            Id a = as_u(s0), b = as_u(s1);
+            if (op == 39) std::swap(a, b);
+            const Id r = m.emit(op == 37 ? spv::OpIAddCarry : spv::OpISubBorrow, m.type_struct({t_u32, t_u32}), {a, b});
+            const Id c = m.emit(spv::OpINotEqual, t_bool, {extract(t_u32, r, 1), cu(0)});
+            write_v(in.dst, word(extract(t_u32, r, 0)));
+            carry(c);
+            return true;
+        }
+        case 40: case 41: case 42: {  // v_addc_u32 / v_subb_u32 / v_subbrev_u32
+            const Val cin = mask ? *mask : read_lane(kVccLo);
+            if (cin.kind != Kind::Lane) return true;
+            const Id c_in = m.emit(spv::OpSelect, t_u32, {cin.id, cu(1), cu(0)});
+            Id a = as_u(s0), b = as_u(s1);
+            if (op == 42) std::swap(a, b);
+            const Id st = m.type_struct({t_u32, t_u32});
+            const spv::Op o = op == 40 ? spv::OpIAddCarry : spv::OpISubBorrow;
+            const Id r1 = m.emit(o, st, {a, b});
+            const Id r2 = m.emit(o, st, {extract(t_u32, r1, 0), c_in});
+            const Id c = m.emit(spv::OpINotEqual, t_bool, {ibin(spv::OpBitwiseOr, extract(t_u32, r1, 1), extract(t_u32, r2, 1)), cu(0)});
+            write_v(in.dst, word(extract(t_u32, r2, 0)));
+            carry(c);
+            return true;
+        }
+        case 43: return out_f(ext(spv::GlslLdexp, {F0(), to_i(as_u(s1))}));  // v_ldexp_f32
+        case 47: {  // v_cvt_pkrtz_f16_f32
+            const Id lo = F0(), hi = F1();
+            const Id v2 = m.emit(spv::OpCompositeConstruct, t_v2f, {lo, hi});
+            const Id packed = native_rtz ? m.emit(spv::OpBitcast, t_u32, {m.emit(spv::OpFConvert, t_v2h, {v2})})
+                                         : ext(spv::GlslPackHalf2x16, {v2}, t_u32);
+            // A compressed export of it in this block rounds these, as the translator does (translate.cpp exp).
+            if (export_rtz_on()) packed_pairs[packed] = {lo, hi, m.blocks()};
+            write_v(in.dst, word(packed));
+            return true;
+        }
+        case 48: {  // v_cvt_pk_u16_u32
+            const Id lo = ext(spv::GlslUMin, {as_u(s0), cu(0xffff)}, t_u32);
+            const Id hi = ext(spv::GlslUMin, {as_u(s1), cu(0xffff)}, t_u32);
+            return out_u(ibin(spv::OpBitwiseOr, lo, shift(spv::OpShiftLeftLogical, hi, cu(16))));
+        }
+        case 49: {  // v_cvt_pk_i16_i32
+            const Id lo = from_i(ext(spv::GlslSClamp, {to_i(as_u(s0)), m.const_i32(-32768), m.const_i32(32767)}, t_i32));
+            const Id hi = from_i(ext(spv::GlslSClamp, {to_i(as_u(s1)), m.const_i32(-32768), m.const_i32(32767)}, t_i32));
+            return out_u(ibin(spv::OpBitwiseOr, ibin(spv::OpBitwiseAnd, lo, cu(0xffff)), shift(spv::OpShiftLeftLogical, hi, cu(16))));
+        }
+        default: return false;
+        }
+    }
+
+    bool vop1(std::uint32_t op, const Inst& in, const Val& s0, const Mods& md) {
+        const auto F0 = [&] { return src_f(s0, 0, md); };
+        const auto out_f = [&](Id v) { write_v(in.dst, result_f(v, md)); return true; };
+        const auto out_u = [&](Id v) { write_v(in.dst, word(v)); return true; };
+        const auto f_to_i = [&](Id x) { return from_i(m.emit(spv::OpConvertFToS, t_i32, {x})); };
+        switch (op) {
+        case 0: return true;
+        case 1: write_v(in.dst, s0); return true;
+        case 5: return out_f(m.emit(spv::OpConvertSToF, t_f32, {to_i(as_u(s0))}));  // v_cvt_f32_i32
+        case 6: return out_f(m.emit(spv::OpConvertUToF, t_f32, {as_u(s0)}));        // v_cvt_f32_u32
+        case 7: {  // v_cvt_u32_f32 (saturating, NaN -> 0)
+            const Id x = F0();
+            const Id c = ext(spv::GlslFClamp, {x, cf(0.0f), cf(4294967040.0f)});
+            const Id nan = is_nan(x);
+            return out_u(m.emit(spv::OpSelect, t_u32, {nan, cu(0), m.emit(spv::OpConvertFToU, t_u32, {c})}));
+        }
+        case 8: {  // v_cvt_i32_f32
+            const Id x = F0();
+            const Id c = ext(spv::GlslFClamp, {x, cf(-2147483648.0f), cf(2147483520.0f)});
+            const Id nan = is_nan(x);
+            return out_u(m.emit(spv::OpSelect, t_u32, {nan, cu(0), f_to_i(c)}));
+        }
+        case 10: {  // v_cvt_f16_f32
+            const Id v2 = m.emit(spv::OpCompositeConstruct, t_v2f, {F0(), cf(0.0f)});
+            return out_u(ibin(spv::OpBitwiseAnd, ext(spv::GlslPackHalf2x16, {v2}, t_u32), cu(0xffff)));
+        }
+        case 11:  // v_cvt_f32_f16
+            return out_f(unpack_half(ibin(spv::OpBitwiseAnd, as_u(s0), cu(0xffff))));
+        case 12: return out_u(f_to_i(ext(spv::GlslFloor, {fadd(F0(), cf(0.5f))})));  // v_cvt_rpi_i32_f32
+        case 13: return out_u(f_to_i(ext(spv::GlslFloor, {F0()})));                   // v_cvt_flr_i32_f32
+        case 14: {                                                                    // v_cvt_off_f32_i4
+            const Id nib = m.emit(spv::OpBitFieldSExtract, t_i32, {to_i(as_u(s0)), cu(0), cu(4)});
+            return out_f(fmul(m.emit(spv::OpConvertSToF, t_f32, {nib}), cf(1.0f / 16.0f)));
+        }
+        case 17: case 18: case 19: case 20:  // v_cvt_f32_ubyteN
+            return out_f(m.emit(spv::OpConvertUToF, t_f32, {m.emit(spv::OpBitFieldUExtract, t_u32, {as_u(s0), cu(8 * (op - 17)), cu(8)})}));
+        case 53: return out_f(ext(spv::GlslSin, {fmul(F0(), cf(6.2831853f))}));  // input in revolutions
+        case 54: return out_f(ext(spv::GlslCos, {fmul(F0(), cf(6.2831853f))}));
+        case 55: return out_u(m.emit(spv::OpNot, t_u32, {as_u(s0)}));
+        case 56: return out_u(m.emit(spv::OpBitReverse, t_u32, {as_u(s0)}));
+        case 57: {  // v_ffbh_u32
+            const Id x = as_u(s0);
+            const Id msb = ext(spv::GlslFindUMsb, {x}, t_u32);
+            return out_u(m.emit(spv::OpSelect, t_u32, {ieq(x, cu(0)), cu(0xffffffffu), ibin(spv::OpISub, cu(31), msb)}));
+        }
+        case 58: return out_u(ext(spv::GlslFindILsb, {as_u(s0)}, t_u32));
+        case 59: {  // v_ffbh_i32
+            const Id x = as_u(s0);
+            const Id msb = from_i(ext(spv::GlslFindSMsb, {to_i(x)}, t_i32));
+            const Id none = m.emit(spv::OpLogicalOr, t_bool, {ieq(x, cu(0)), ieq(x, cu(0xffffffffu))});
+            return out_u(m.emit(spv::OpSelect, t_u32, {none, cu(0xffffffffu), ibin(spv::OpISub, cu(31), msb)}));
+        }
+        case 32: return out_f(ext(spv::GlslFract, {F0()}));
+        case 33: return out_f(ext(spv::GlslTrunc, {F0()}));
+        case 34: return out_f(ext(spv::GlslCeil, {F0()}));
+        case 35: return out_f(ext(spv::GlslRoundEven, {F0()}));
+        case 36: return out_f(ext(spv::GlslFloor, {F0()}));
+        case 37: return out_f(ext(spv::GlslExp2, {F0()}));
+        case 38: case 39: return out_f(ext(spv::GlslLog2, {F0()}));
+        case 40: return out_f(clamp_inf(fdiv(cf(1.0f), F0())));
+        case 41: case 42: case 43: return out_f(fdiv(cf(1.0f), F0()));
+        case 44: return out_f(clamp_inf(ext(spv::GlslInverseSqrt, {F0()})));
+        case 45: case 46: return out_f(ext(spv::GlslInverseSqrt, {F0()}));
+        case 51: return out_f(ext(spv::GlslSqrt, {F0()}));
+        default: return false;
+        }
+    }
+
+    Id vcmp_cond(std::uint32_t op, const Val& s0, const Val& s1, const Mods& md) {
+        const std::uint32_t hi = (op >> 5) & 7, lo = op & 0xf;
+        if (hi == 0 || hi == 2) {
+            const Id a = src_f(s0, 0, md), b = src_f(s1, 1, md);
+            const auto isnan = [&](Id x) { return m.emit(spv::OpIsNan, t_bool, {x}); };
+            const auto lor = [&](Id x, Id y) { return m.emit(spv::OpLogicalOr, t_bool, {x, y}); };
+            const auto land = [&](Id x, Id y) { return m.emit(spv::OpLogicalAnd, t_bool, {x, y}); };
+            const auto lnot = [&](Id x) { return m.emit(spv::OpLogicalNot, t_bool, {x}); };
+            const Id unord = lor(isnan(a), isnan(b));
+            switch (lo) {
+            case 0: return m.const_bool(false);
+            case 1: return m.emit(spv::OpFOrdLessThan, t_bool, {a, b});
+            case 2: return feq(a, b);
+            case 3: return m.emit(spv::OpFOrdLessThanEqual, t_bool, {a, b});
+            case 4: return m.emit(spv::OpFOrdGreaterThan, t_bool, {a, b});
+            case 5: return land(lnot(unord), lnot(feq(a, b)));
+            case 6: return fge(a, b);
+            case 7: return lnot(unord);
+            case 8: return unord;
+            case 9: return lnot(fge(a, b));
+            case 10: return lor(unord, feq(a, b));
+            case 11: return lnot(m.emit(spv::OpFOrdGreaterThan, t_bool, {a, b}));
+            case 12: return lnot(m.emit(spv::OpFOrdLessThanEqual, t_bool, {a, b}));
+            case 13: return lnot(feq(a, b));
+            case 14: return lnot(m.emit(spv::OpFOrdLessThan, t_bool, {a, b}));
+            default: return m.const_bool(true);
+            }
+        }
+        if (hi != 4 && hi != 6) {
+            reject("64-bit or class comparisons are not lifted");
+            return m.const_bool(false);
+        }
+        const bool is_signed = hi == 4;
+        const Id a = as_u(s0), b = as_u(s1);
+        switch (lo) {
+        case 0: return m.const_bool(false);
+        case 1: return m.emit(is_signed ? spv::OpSLessThan : spv::OpULessThan, t_bool, {a, b});
+        case 2: return m.emit(spv::OpIEqual, t_bool, {a, b});
+        case 3: return m.emit(is_signed ? spv::OpSLessThanEqual : spv::OpULessThanEqual, t_bool, {a, b});
+        case 4: return m.emit(is_signed ? spv::OpSGreaterThan : spv::OpUGreaterThan, t_bool, {a, b});
+        case 5: return m.emit(spv::OpINotEqual, t_bool, {a, b});
+        case 6: return m.emit(is_signed ? spv::OpSGreaterThanEqual : spv::OpUGreaterThanEqual, t_bool, {a, b});
+        default: return m.const_bool(true);
+        }
+    }
+    void vcmp(std::uint32_t op, const Val& s0, const Val& s1, const Mods& md, std::uint16_t dst_pair) {
+        // The ballot the translator writes is the comparison AND this lane's EXEC.
+        const Val c = band(lane(vcmp_cond(op, s0, s1, md)), exec_lane());
+        write_lane(dst_pair, c);
+        if (op & 0x10) write_lane(kExecLo, c);
+    }
+
+    void cube_ops(std::uint32_t op, const Inst& in, const Val& s0, const Val& s1, const Val& s2, const Mods& md) {
+        const Id x = src_f(s0, 0, md), y = src_f(s1, 1, md), z = src_f(s2, 2, md);
+        const Id ax = ext(spv::GlslFAbs, {x}), ay = ext(spv::GlslFAbs, {y}), az = ext(spv::GlslFAbs, {z});
+        const Id z_major = m.emit(spv::OpLogicalAnd, t_bool, {fge(az, ax), fge(az, ay)});
+        const Id y_major = m.emit(spv::OpLogicalAnd, t_bool, {m.emit(spv::OpLogicalNot, t_bool, {z_major}), fge(ay, ax)});
+        const Id zero = cf(0.0f);
+        Id r;
+        switch (op) {
+        case 0x144: r = fsel(z_major, fsel(fge(z, zero), cf(4.0f), cf(5.0f)), fsel(y_major, fsel(fge(y, zero), cf(2.0f), cf(3.0f)), fsel(fge(x, zero), cf(0.0f), cf(1.0f)))); break;
+        case 0x145: r = fsel(z_major, fsel(fge(z, zero), x, fneg(x)), fsel(y_major, x, fsel(fge(x, zero), fneg(z), z))); break;
+        case 0x146: r = fsel(z_major, fneg(y), fsel(y_major, fsel(fge(y, zero), z, fneg(z)), fneg(y))); break;
+        default: r = fmul(cf(2.0f), fsel(z_major, z, fsel(y_major, y, x))); break;
+        }
+        write_v(in.dst, result_f(r, md));
+    }
+
+    bool vop3_only(std::uint32_t op, const Inst& in, const Val& s0, const Val& s1, const Val& s2, const Mods& md) {
+        const auto F0 = [&] { return src_f(s0, 0, md); };
+        const auto F1 = [&] { return src_f(s1, 1, md); };
+        const auto F2 = [&] { return src_f(s2, 2, md); };
+        const auto out_f = [&](Id v) { write_v(in.dst, result_f(v, md)); return true; };
+        const auto out_u = [&](Id v) { write_v(in.dst, word(v)); return true; };
+        const auto band31 = [&](const Val& v) { return ibin(spv::OpBitwiseAnd, as_u(v), cu(31)); };
+        const auto i3 = [&](spv::Glsl inner, spv::Glsl outer) {  // outer(inner(s0, s1), s2) on i32
+            const Id r = from_i(ext(inner, {to_i(as_u(s0)), to_i(as_u(s1))}, t_i32));
+            return from_i(ext(outer, {to_i(r), to_i(as_u(s2))}, t_i32));
+        };
+        switch (op) {
+        case 0x140: return out_f(fadd(mul_legacy(F0(), F1()), F2()));
+        case 0x141: case 0x14b: return out_f(ext(spv::GlslFma, {F0(), F1(), F2()}));
+        case 0x142: return out_u(ibin(spv::OpIAdd, ibin(spv::OpIMul, sext24(as_u(s0)), sext24(as_u(s1))), as_u(s2)));  // v_mad_i32_i24
+        case 0x143: return out_u(ibin(spv::OpIAdd, ibin(spv::OpIMul, zext24(as_u(s0)), zext24(as_u(s1))), as_u(s2)));  // v_mad_u32_u24
+        case 0x144: case 0x145: case 0x146: case 0x147: cube_ops(op, in, s0, s1, s2, md); return true;
+        case 0x148: return out_u(m.emit(spv::OpBitFieldUExtract, t_u32, {as_u(s0), band31(s1), band31(s2)}));  // v_bfe_u32
+        case 0x149: return out_u(from_i(m.emit(spv::OpBitFieldSExtract, t_i32, {to_i(as_u(s0)), band31(s1), band31(s2)})));
+        case 0x14a: {  // v_bfi_b32
+            const Id a = as_u(s0);
+            return out_u(ibin(spv::OpBitwiseOr, ibin(spv::OpBitwiseAnd, a, as_u(s1)), ibin(spv::OpBitwiseAnd, m.emit(spv::OpNot, t_u32, {a}), as_u(s2))));
+        }
+        case 0x151: return out_f(ext(spv::GlslNMin, {ext(spv::GlslNMin, {F0(), F1()}), F2()}));
+        case 0x152: return out_u(i3(spv::GlslSMin, spv::GlslSMin));
+        case 0x153: return out_u(ext(spv::GlslUMin, {ext(spv::GlslUMin, {as_u(s0), as_u(s1)}, t_u32), as_u(s2)}, t_u32));
+        case 0x154: return out_f(ext(spv::GlslNMax, {ext(spv::GlslNMax, {F0(), F1()}), F2()}));
+        case 0x155: return out_u(i3(spv::GlslSMax, spv::GlslSMax));
+        case 0x156: return out_u(ext(spv::GlslUMax, {ext(spv::GlslUMax, {as_u(s0), as_u(s1)}, t_u32), as_u(s2)}, t_u32));
+        case 0x157: {
+            const Id a = F0(), b = F1(), c = F2();
+            return out_f(ext(spv::GlslNMax, {ext(spv::GlslNMin, {a, b}), ext(spv::GlslNMin, {ext(spv::GlslNMax, {a, b}), c})}));
+        }
+        case 0x158: {  // v_med3_i32
+            const Id a = to_i(as_u(s0)), b = to_i(as_u(s1)), c = to_i(as_u(s2));
+            const Id mn = ext(spv::GlslSMin, {a, b}, t_i32), mx = ext(spv::GlslSMax, {a, b}, t_i32);
+            return out_u(from_i(ext(spv::GlslSMax, {mn, ext(spv::GlslSMin, {mx, c}, t_i32)}, t_i32)));
+        }
+        case 0x159: {  // v_med3_u32
+            const Id a = as_u(s0), b = as_u(s1), c = as_u(s2);
+            const Id mn = ext(spv::GlslUMin, {a, b}, t_u32), mx = ext(spv::GlslUMax, {a, b}, t_u32);
+            return out_u(ext(spv::GlslUMax, {mn, ext(spv::GlslUMin, {mx, c}, t_u32)}, t_u32));
+        }
+        case 0x15d:  // v_sad_u32
+            return out_u(ibin(spv::OpIAdd, from_i(ext(spv::GlslSAbs, {to_i(ibin(spv::OpISub, as_u(s0), as_u(s1)))}, t_i32)), as_u(s2)));
+        case 0x15e: {  // v_cvt_pk_u8_f32: byte s1 of s2 replaced by u8(s0)
+            const Id byte = m.emit(spv::OpConvertFToU, t_u32, {ext(spv::GlslFClamp, {F0(), cf(0.0f), cf(255.0f)})});
+            const Id sh = shift(spv::OpShiftLeftLogical, ibin(spv::OpBitwiseAnd, as_u(s1), cu(3)), cu(3));
+            const Id mask = shift(spv::OpShiftLeftLogical, cu(0xff), sh);
+            return out_u(ibin(spv::OpBitwiseOr, ibin(spv::OpBitwiseAnd, as_u(s2), m.emit(spv::OpNot, t_u32, {mask})),
+                              shift(spv::OpShiftLeftLogical, byte, sh)));
+        }
+        case 0x169: case 0x16b: return out_u(ibin(spv::OpIMul, as_u(s0), as_u(s1)));  // v_mul_lo_u32 / v_mul_lo_i32
+        case 0x16a: return out_u(extract(t_u32, m.emit(spv::OpUMulExtended, m.type_struct({t_u32, t_u32}), {as_u(s0), as_u(s1)}), 1));
+        case 0x16c: {
+            const Id a = to_i(as_u(s0)), b = to_i(as_u(s1));
+            return out_u(from_i(extract(t_i32, m.emit(spv::OpSMulExtended, m.type_struct({t_i32, t_i32}), {a, b}), 1)));
+        }
+        default: return false;
+        }
+    }
+
+    void valu(const Inst& in) {
+        Mods md;
+        const auto unsupported = [&] { reject(std::string("unsupported ") + mnemonic(in)); };
+        if (in.enc == Enc::VOP2) {
+            if (in.op == 1 || in.op == 2) return unsupported();
+            if (!vop2(in.op, in, read(in.src0, in), read(in.src1, in), md, nullptr, kVccLo)) unsupported();
+            return;
+        }
+        if (in.enc == Enc::VOP1) {
+            if (!vop1(in.op, in, read(in.src0, in), md)) unsupported();
+            return;
+        }
+        if (in.enc == Enc::VOPC) {
+            vcmp(in.op, read(in.src0, in), read(in.src1, in), md, kVccLo);
+            return;
+        }
+        md.abs = in.abs;
+        md.neg = in.neg;
+        md.omod = in.omod;
+        md.clamp = in.clamp;
+        if (in.op < 0x100) {
+            vcmp(in.op, read(in.src0, in), read(in.src1, in), md, in.sdst);
+            return;
+        }
+        if (in.op < 0x140) {
+            const std::uint32_t op = in.op - 0x100;
+            if (op == 1 || op == 2) return unsupported();
+            const Val s0 = read(in.src0, in), s1 = read(in.src1, in);
+            const bool takes_mask = op == 0 || (op >= 40 && op <= 42);  // v_cndmask's select, the carry in
+            Val mask;
+            if (takes_mask) mask = read_lane(in.src2);
+            if (!vop2(op, in, s0, s1, md, takes_mask ? &mask : nullptr, in.sdst)) unsupported();
+            return;
+        }
+        if (in.op < 0x180) {
+            // src2 is an operand only below 0x160; the 64-bit shift and the multiplies above take two.
+            const Val s0 = read(in.src0, in), s1 = read(in.src1, in);
+            const Val s2 = in.op < 0x160 ? read(in.src2, in) : word_const(0);
+            if (!vop3_only(in.op, in, s0, s1, s2, md)) unsupported();
+            return;
+        }
+        if (!vop1(in.op - 0x180, in, read(in.src0, in), md)) unsupported();
+    }
+
+    void sop1(const Inst& in) {
+        switch (in.op) {
+        case 3: write_scalar(in.dst, read(in.src0, in)); return;
+        case 4: {
+            const bool is_mask = in.src0 == kExecLo || in.src0 == kVccLo || (in.src0 < 104 && lanes.count(in.src0));
+            if (is_mask || in.dst == kExecLo || in.dst == kVccLo) {
+                write_lane(in.dst, read_lane(in.src0));
+            } else {
+                const Val lo = read(in.src0, in), hi = read(static_cast<std::uint16_t>(in.src0 + 1), in);
+                write_scalar(in.dst, lo);
+                write_scalar(static_cast<std::uint16_t>(in.dst + 1), hi);
+            }
+            return;  // s_mov_b64 leaves SCC, as in the translator
+        }
+        case 10: {  // s_wqm_b64
+            const Val a = read_lane(in.src0);
+            if (!a.constant && !widen_ok) {
+                reject("whole-quad mode of a mask that is not constant: the result depends on the other pixels of the quad");
+                return;
+            }
+            Val r = a;
+            if (widen_ok) {
+                // Widening a kill region's EXEC. From EXEC known set, every pixel
+                // computes the region, as GCN's widened quads do wherever a pixel
+                // survives; otherwise the pixel keeps its own bit. Either way the
+                // pixels that differ must be killed at s_endpgm (checked there).
+                Region& k = *open_regions.back();
+                if (k.exec_before.constant && k.exec_before.set) {
+                    r = lane_const(true);
+                    k.quad_exact = true;
+                }
+            }
+            write_lane(in.dst, r);
+            set_scc_mask(r);
+            return;
+        }
+        case 33:  // s_swappc_b64 in a vertex shader on vertex input (check_program): the elements load at the call
+            write_scalar(in.dst, word_const(in.offset + 4));
+            write_scalar(static_cast<std::uint16_t>(in.dst + 1), word_const(0));
+            load_vertex_input();
+            return;
+        case 36: case 37: case 38: case 39: case 40: case 41: case 42: case 43: {  // s_*_saveexec_b64
+            const Val a = read_lane(in.src0);
+            const Val e = exec_lane();
+            write_lane(in.dst, e);
+            Val r;
+            switch (in.op) {
+            case 36: r = band(a, e); break;
+            case 37: r = bor(a, e); break;
+            case 38: r = bxor(a, e); break;
+            case 39: r = band(a, bnot(e)); break;
+            case 40: r = bor(a, bnot(e)); break;
+            case 41: r = bnot(band(a, e)); break;
+            case 42: r = bnot(bor(a, e)); break;
+            default: r = bnot(bxor(a, e)); break;
+            }
+            write_lane(kExecLo, r);
+            set_scc_mask(r);
+            return;
+        }
+        default: reject(std::string("unsupported ") + mnemonic(in));
+        }
+    }
+
+    void sop2(const Inst& in) {
+        switch (in.op) {
+        case 15: case 17: case 19: case 21: case 23: {
+            const Val a = read_lane(in.src0);
+            Val b = read_lane(in.src1);
+            if (in.op == 21 || in.op == 23) b = bnot(b);
+            const Val r = in.op == 15 || in.op == 21 ? band(a, b) : in.op == 19 ? bxor(a, b) : bor(a, b);
+            write_lane(in.dst, r);
+            set_scc_mask(r);
+            return;
+        }
+        default: reject(std::string("unsupported ") + mnemonic(in));
+        }
+    }
+
+    // translate.cpp sopc / sopk. Kind: 0 eq, 1 ne, 2 sgt, 3 sge, 4 slt, 5 sle,
+    // 6 ugt, 7 uge, 8 ult, 9 ule, 10 bit clear, 11 bit set.
+    Val scalar_compare(int kind, const Val& a, const Val& b) {
+        if (a.kind == Kind::Lane || b.kind == Kind::Lane) {
+            reject("a lane mask is compared as a word");
+            return lane_const(false);
+        }
+        if (a.constant && b.constant) {
+            const std::uint32_t x = a.bits, y = b.bits;
+            const std::int32_t sx = static_cast<std::int32_t>(x), sy = static_cast<std::int32_t>(y);
+            const bool bit = (x >> (y & 31)) & 1;
+            const bool r[12] = {x == y, x != y, sx > sy, sx >= sy, sx < sy, sx <= sy, x > y, x >= y, x < y, x <= y, !bit, bit};
+            return lane_const(r[kind]);
+        }
+        const Id x = as_u(a), y = as_u(b);
+        static const spv::Op kOps[10] = {spv::OpIEqual, spv::OpINotEqual, spv::OpSGreaterThan, spv::OpSGreaterThanEqual, spv::OpSLessThan,
+                                         spv::OpSLessThanEqual, spv::OpUGreaterThan, spv::OpUGreaterThanEqual, spv::OpULessThan,
+                                         spv::OpULessThanEqual};
+        if (kind < 10) return lane(m.emit(kOps[kind], t_bool, {x, y}));
+        const Id bit = ibin(spv::OpBitwiseAnd, shift(spv::OpShiftRightLogical, x, y), cu(1));
+        return lane(ieq(bit, cu(kind == 10 ? 0 : 1)));
+    }
+
+    void sopc(const Inst& in) {
+        static const int kKind[14] = {0, 1, 2, 3, 4, 5, 0, 1, 6, 7, 8, 9, 10, 11};
+        if (in.op > 13) {
+            reject(std::string("unsupported ") + mnemonic(in));
+            return;
+        }
+        set_scc_bool(scalar_compare(kKind[in.op], read(in.src0, in), read(in.src1, in)));
+    }
+
+    void sopk(const Inst& in) {
+        const std::uint32_t imm = static_cast<std::uint32_t>(in.imm);
+        switch (in.op) {
+        case 0: write_scalar(in.dst, word_const(imm)); return;  // s_movk_i32
+        case 2: {  // s_cmovk_i32: the immediate where SCC is set
+            if (!scc_valid || !scc_uniform) {
+                reject("s_cmovk_i32 on an SCC that is not a scalar condition");
+                return;
+            }
+            const Val d = read(in.dst, in);
+            if (scc_mask.constant) {
+                write_scalar(in.dst, scc_mask.set ? word_const(imm) : d);
+            } else {
+                write_scalar(in.dst, word(m.emit(spv::OpSelect, t_u32, {scc_mask.id, cu(imm), as_u(d)})));
+            }
+            return;
+        }
+        case 3: case 4: case 5: case 6: case 7: case 8:  // s_cmpk_*_i32 against the sign-extended immediate
+            set_scc_bool(scalar_compare(static_cast<int>(in.op) - 3, read(in.dst, in), word_const(imm)));
+            return;
+        case 9: case 10: case 11: case 12: case 13: case 14: {  // s_cmpk_*_u32 against its low 16 bits
+            static const int kKind[6] = {0, 1, 6, 7, 8, 9};
+            set_scc_bool(scalar_compare(kKind[in.op - 9], read(in.dst, in), word_const(imm & 0xffff)));
+            return;
+        }
+        case 15: {  // s_addk_i32: SCC is the signed overflow
+            const Id x = as_u(read(in.dst, in)), k = cu(imm);
+            const Id r = ibin(spv::OpIAdd, x, k);
+            const Id same_sign = ieq(shift(spv::OpShiftRightLogical, ibin(spv::OpBitwiseXor, x, k), cu(31)), cu(0));
+            const Id flipped = m.emit(spv::OpINotEqual, t_bool, {shift(spv::OpShiftRightLogical, ibin(spv::OpBitwiseXor, x, r), cu(31)), cu(0)});
+            write_scalar(in.dst, word(r));
+            set_scc_bool(lane(m.emit(spv::OpLogicalAnd, t_bool, {same_sign, flipped})));
+            return;
+        }
+        case 16: write_scalar(in.dst, word(ibin(spv::OpIMul, as_u(read(in.dst, in)), cu(imm)))); return;  // s_mulk_i32
+        case 18: write_scalar(in.dst, word_const(0)); return;  // s_getreg_b32: hardware registers read 0, as the translator
+        case 19: case 21: return;                               // s_setreg: ignored, as the translator
+        default: reject(std::string("unsupported ") + mnemonic(in));
+        }
+    }
+
+    void sopp(const Inst& in) {
+        switch (in.op) {
+        case 0: return;
+        case 1: {
+            const Val e = exec_lane();
+            if (opt.stage == Stage::Vertex) {
+                if (!(e.constant && e.set)) reject("EXEC is not known set at s_endpgm in a vertex shader, which has no discard");
+                return;
+            }
+            // A guard is defined before its branch, so it is the same on either
+            // path: with EXEC equal to it here, the pixels where the lift may
+            // differ from GCN are killed in both, and the others match exactly.
+            for (const KillProof& k : kill_proofs) {
+                if (!same_lane(e, k.guard)) reject("EXEC at s_endpgm is not the guard of a kill region, so a pixel where the lift differs from GCN may survive");
+            }
+            for (const Val& x : export_execs) {
+                if (!implies(e, x)) reject("a pixel exported where EXEC was clear is not killed at s_endpgm");
+            }
+            if (!(e.constant && e.set)) {  // as the translator: a pixel whose EXEC bit is clear is discarded
+                needs_kill = true;
+                kill_exec = e;
+            }
+            return;
+        }
+        case 2: case 4: case 5: case 6: case 7: case 8: exec_lane(); return;  // region and if bookkeeping happens in emit()
+        case 12:
+            if (((in.imm >> 8) & 0xf) != 0xf) {
+                for (const Pending& p : pending) {
+                    for (std::size_t k = 0; k < p.values.size(); ++k) write_scalar(static_cast<std::uint16_t>(p.sdst + static_cast<int>(k)), p.values[k]);
+                }
+                pending.clear();
+            }
+            return;
+        case 13: case 14: case 15: case 16: case 17: case 19: case 20: case 21: case 22: return;
+        default: reject(std::string("unsupported ") + mnemonic(in));
+        }
+    }
+
+    void smrd(const Inst& in) {
+        const int count = in.op < 8 ? (1 << in.op) : (in.op < 13 ? (1 << (in.op - 8)) : 0);
+        const auto site = ref.buffer_at.find(in.offset);
+        if (!count || site == ref.buffer_at.end() || site->second >= buffer_vars.size()) {
+            reject(std::string(mnemonic(in)) + " is not read through a bound storage buffer in the reference");
+            return;
+        }
+        if (!in.imm_flag && !in.has_literal) {
+            reject("scalar load at a register offset");
+            return;
+        }
+        const std::uint32_t index = site->second;
+        const std::uint32_t off_dw = in.imm_flag ? static_cast<std::uint32_t>(in.imm) : in.literal;
+        const Id bias = params_load(bias_loads, 4, index);
+        Pending p{in.sdst, {}};
+        for (int k = 0; k < count; ++k) {
+            const Id at = m.emit(spv::OpIAdd, t_u32, {bias, cu(off_dw + static_cast<std::uint32_t>(k))});
+            const Val v = word(m.load(t_u32, m.access_chain(p_ssbo_u32, buffer_vars[index], {cu(0), at})));
+            write_scalar(static_cast<std::uint16_t>(in.sdst + k), v);
+            p.values.push_back(v);
+        }
+        pending.push_back(std::move(p));
+        ++buffer_loads;
+    }
+
+    // A typed load's V# word 3 (StageParams::cb_w3), as translate.cpp
+    // indexed_buffer_load reads it: also specialization constant
+    // kCbW3SpecId + index (0, the default, reads the params), which an
+    // optimized relink gives the draw's (render.cpp queue_library_relink) so
+    // the driver folds the DST_SEL selects away.
+    std::map<std::uint32_t, Id> w3_values, stride_values;
+    Id w3_value(std::uint32_t index) { return spec_or_params(w3_values, w3_loads, 6, kCbW3SpecId, index); }
+    // Its stride likewise (kCbStrideSpecId).
+    Id stride_value(std::uint32_t index) { return spec_or_params(stride_values, stride_loads, 5, kCbStrideSpecId, index); }
+    Id spec_or_params(std::map<std::uint32_t, Id>& values, std::map<std::uint32_t, Id>& loads, std::uint32_t member, std::uint32_t spec_id,
+                      std::uint32_t index) {
+        auto it = values.find(index);
+        if (it != values.end()) return it->second;
+        const Id loaded = params_load(loads, member, index);
+        EntryScope entry(m);
+        const Id spec = m.spec_const_u32(0, spec_id + index);
+        const Id v = m.emit(spv::OpSelect, t_u32, {m.emit(spv::OpINotEqual, t_bool, {spec, cu(0)}), spec, loaded});
+        return values.emplace(index, v).first->second;
+    }
+    Id params_load(std::map<std::uint32_t, Id>& cache, std::uint32_t member, std::uint32_t index) {
+        auto it = cache.find(index);
+        if (it == cache.end()) {
+            EntryScope entry(m);
+            const Id p = m.access_chain(p_uni_u32, ubo_var, {cu(member), cu(index / 4), cu(index % 4)});
+            it = cache.emplace(index, m.load(t_u32, p)).first;
+        }
+        return it->second;
+    }
+
+    static bool format_layout(std::uint32_t dfmt, int& count, int bits[4]) {  // translate.cpp format_layout
+        switch (dfmt) {
+        case 1: count = 1; bits[0] = 8; return true;
+        case 2: count = 1; bits[0] = 16; return true;
+        case 3: count = 2; bits[0] = bits[1] = 8; return true;
+        case 4: count = 1; bits[0] = 32; return true;
+        case 5: count = 2; bits[0] = bits[1] = 16; return true;
+        case 6: count = 3; bits[0] = 11; bits[1] = 11; bits[2] = 10; return true;
+        case 7: count = 3; bits[0] = 10; bits[1] = 11; bits[2] = 11; return true;
+        case 8: count = 4; bits[0] = 2; bits[1] = 10; bits[2] = 10; bits[3] = 10; return true;
+        case 9: count = 4; bits[0] = 10; bits[1] = 10; bits[2] = 10; bits[3] = 2; return true;
+        case 10: count = 4; bits[0] = bits[1] = bits[2] = bits[3] = 8; return true;
+        case 11: count = 2; bits[0] = bits[1] = 32; return true;
+        case 12: count = 4; bits[0] = bits[1] = bits[2] = bits[3] = 16; return true;
+        case 13: count = 3; bits[0] = bits[1] = bits[2] = 32; return true;
+        case 14: count = 4; bits[0] = bits[1] = bits[2] = bits[3] = 32; return true;
+        default: return false;
+        }
+    }
+    // One raw component as a word, per number format (translate.cpp convert_component).
+    Id convert_component(Id raw, int bits, std::uint32_t nfmt) {
+        const float maxu = static_cast<float>((1ull << bits) - 1);
+        const float maxs = static_cast<float>((1ull << (bits - 1)) - 1);
+        const auto sext = [&] { return m.emit(spv::OpBitFieldSExtract, t_i32, {to_i(raw), cu(0), cu(static_cast<std::uint32_t>(bits))}); };
+        const auto s2f = [&](Id i) { return m.emit(spv::OpConvertSToF, t_f32, {i}); };
+        switch (nfmt) {
+        case 0: return bits == 32 ? raw : as_u(flt(fdiv(m.emit(spv::OpConvertUToF, t_f32, {raw}), cf(maxu))));  // unorm
+        case 1: return bits == 32 ? raw : as_u(flt(ext(spv::GlslNMax, {fdiv(s2f(sext()), cf(maxs)), cf(-1.0f)})));  // snorm
+        case 2: return as_u(flt(m.emit(spv::OpConvertUToF, t_f32, {raw})));  // uscaled
+        case 3: return as_u(flt(s2f(sext())));                                 // sscaled
+        case 4: return raw;                                                    // uint
+        case 5: return from_i(sext());                                         // sint
+        case 6: return as_u(flt(fdiv(s2f(sext()), cf(maxs))));                 // snorm_ogl
+        case 7:                                                                // float
+            if (bits == 16) return as_u(flt(extract(t_f32, ext(spv::GlslUnpackHalf2x16, {raw}, t_v2f), 0)));
+            if (bits == 10 || bits == 11) reject("packed 10- and 11-bit float components are not lifted");
+            return raw;
+        default: return raw;
+        }
+    }
+
+    // tbuffer_load_format_* read by index from a storage buffer the reference
+    // binds (translate.cpp indexed_buffer_load with cb_no_fallback): the
+    // element at dword (offset12 + soffset) / 4 + index * stride / 4, decoded
+    // by its static format and selected per component by the V#'s word 3.
+    void mtbuf(const Inst& in) {
+        if (in.op >= 4) {
+            reject(std::string(mnemonic(in)) + " is not lifted");
+            return;
+        }
+        const auto site = ref.buffer_at.find(in.offset);
+        if (site == ref.buffer_at.end() || site->second >= buffer_vars.size() || !ref.buffers[site->second].indexed) {
+            reject(std::string(mnemonic(in)) + " is not an indexed load from a storage buffer the reference binds");
+            return;
+        }
+        int count = 0, bits[4] = {};
+        const std::int32_t constant = in.soffset <= 192 ? static_cast<std::int32_t>(in.soffset) - 128 : 192 - static_cast<std::int32_t>(in.soffset);
+        const std::int32_t off = static_cast<std::int32_t>(in.offset12) + constant;
+        if (!in.idxen || in.offen || in.addr64 || in.soffset < 128 || in.soffset > 208 || off < 0 || off % 4 != 0 ||
+            !format_layout(in.dfmt, count, bits)) {
+            reject(std::string(mnemonic(in)) + ": the reference's indexed load has another shape");
+            return;
+        }
+        const std::uint32_t index = site->second;
+        const Id stride_dw = shift(spv::OpShiftRightLogical, stride_value(index), cu(2));
+        const Id first = ibin(spv::OpIAdd, cu(static_cast<std::uint32_t>(off / 4)), ibin(spv::OpIMul, as_u(value(256 + in.vaddr)), stride_dw));
+        const Id bias = params_load(bias_loads, 4, index);
+        int total = 0;
+        for (int k = 0; k < count; ++k) total += bits[k];
+        std::vector<Id> words;
+        for (int k = 0; k < (total + 31) / 32; ++k) {
+            const Id at = ibin(spv::OpIAdd, bias, ibin(spv::OpIAdd, first, cu(static_cast<std::uint32_t>(k))));
+            words.push_back(m.load(t_u32, m.access_chain(p_ssbo_u32, buffer_vars[index], {cu(0), at})));
+        }
+        const bool integer = in.nfmt == 4 || in.nfmt == 5;
+        const Id one = integer ? cu(1) : as_u(float_const(1.0f));
+        std::vector<Id> comps(4, cu(0));
+        for (int k = 0, bit = 0; k < count; bit += bits[k], ++k) {
+            const Id w = words[static_cast<std::size_t>(bit / 32)];
+            const Id raw = bits[k] == 32 ? w : m.emit(spv::OpBitFieldUExtract, t_u32, {w, cu(static_cast<std::uint32_t>(bit % 32)), cu(static_cast<std::uint32_t>(bits[k]))});
+            comps[static_cast<std::size_t>(k)] = convert_component(raw, bits[k], in.nfmt);
+        }
+        if (count < 4) comps[3] = one;  // missing components are 0, 0, 0, 1
+        const Id w3 = w3_value(index);
+        std::vector<Val> out;
+        for (int k = 0; k < (in.op & 3) + 1; ++k) {  // DST_SEL: 4-7 a component, 1 one, else zero
+            const Id s3 = m.emit(spv::OpBitFieldUExtract, t_u32, {w3, cu(3u * static_cast<std::uint32_t>(k)), cu(3)});
+            const auto pick = [&](std::uint32_t code, Id then_v, Id else_v) { return m.emit(spv::OpSelect, t_u32, {ieq(s3, cu(code)), then_v, else_v}); };
+            out.push_back(word(pick(4, comps[0], pick(5, comps[1], pick(6, comps[2], pick(7, comps[3], pick(1, one, cu(0))))))));
+        }
+        for (std::size_t k = 0; k < out.size(); ++k) write_v(in.vdata + static_cast<int>(k), out[k]);
+        ++buffer_loads;
+    }
+
+    // TranslateOptions::vertex_input, as translate.cpp load_vertex_input: each
+    // element from its input location (raw unsigned components; a packed
+    // format as one dword), converted by its number format and DST_SEL.
+    void load_vertex_input() {
+        inst_uniform = false;  // per vertex
+        for (const VertexElement& el : opt.vertex_input) {
+            const std::uint32_t dfmt = (el.w3 >> 15) & 0xf, nfmt = (el.w3 >> 12) & 7;
+            int count = 0, bits[4] = {};
+            if (!format_layout(dfmt, count, bits)) {
+                reject("vertex input: unsupported buffer data format " + std::to_string(dfmt));
+                return;
+            }
+            Id& var = vertex_in_vars[el.location];
+            if (!var) {
+                var = m.global_variable(p_in_v4u, spv::ScInput);
+                m.decorate(var, spv::DecLocation, {el.location});
+                m.name(var, "vertex_in" + std::to_string(el.location));
+                interface.push_back(var);
+            }
+            const bool packed = dfmt >= 6 && dfmt <= 9;
+            const Id one = nfmt == 4 || nfmt == 5 ? cu(1) : as_u(float_const(1.0f));
+            std::vector<Id> comps(4, cu(0));
+            {
+                EntryScope entry(m);  // inputs and their conversions dominate every block
+                const Id raw = m.load(t_v4u, var);
+                for (int k = 0, bit = 0; k < count; bit += bits[k], ++k) {
+                    const Id c = packed ? m.emit(spv::OpBitFieldUExtract, t_u32, {extract(t_u32, raw, 0), cu(static_cast<std::uint32_t>(bit)),
+                                                                                  cu(static_cast<std::uint32_t>(bits[k]))})
+                                        : extract(t_u32, raw, static_cast<std::uint32_t>(k));
+                    comps[static_cast<std::size_t>(k)] = convert_component(c, bits[k], nfmt);
+                }
+            }
+            if (count < 4) comps[3] = one;
+            for (std::uint32_t k = 0; k < el.count && k < 4; ++k) {
+                const std::uint32_t s3 = (el.w3 >> (3 * k)) & 7;
+                write_v(static_cast<int>(el.vdata + k), word(s3 >= 4 ? comps[s3 - 4] : s3 == 1 ? one : cu(0)));
+            }
+        }
+    }
+
+    static int coord_count(std::uint32_t dim, bool arrayed) {
+        return (dim == spv::Dim1D ? 1 : dim == spv::Dim2D ? 2 : 3) + (arrayed ? 1 : 0);
+    }
+
+    void mimg(const Inst& in) {
+        inst_uniform = false;  // texels are not tracked as uniform
+        const std::uint32_t op = in.op;
+        if (!(op >= 32 && op < 64)) {
+            reject(std::string(mnemonic(in)) + " is not lifted");
+            return;
+        }
+        // Inside a region too: with EXEC known set there the region runs, or a
+        // widened kill region is computed for every pixel that can survive.
+        if (const Val e = exec_lane(); !(e.constant && e.set)) {
+            reject("image sample where EXEC is not known set");
+            return;
+        }
+        const std::uint32_t v = op - 32;
+        const bool has_o = (v & 16) != 0, has_c = (v & 8) != 0;
+        const std::uint32_t low = v & 7;
+        const bool has_cl = low == 1 || low == 3 || low == 6, has_d = low == 2 || low == 3, has_l = low == 4;
+        const bool has_b = low == 5 || low == 6, has_lz = low == 7;
+        if (std::any_of(kill_proofs.begin(), kill_proofs.end(), [](const KillProof& k) { return k.per_pixel; }) && !has_l && !has_lz && !has_d) {
+            reject("implicit-LOD sample after a kill region where the lift may differ from GCN in pixels it kills: its derivatives would read them");
+            return;
+        }
+        const auto ii = ref.image_at.find(in.offset);
+        const auto si = ref.sampler_at.find(in.offset);
+        if (ii == ref.image_at.end() || si == ref.sampler_at.end() || ii->second >= image_vars.size() || si->second >= sampler_vars.size()) {
+            reject("the reference has no image or sampler binding for this sample");
+            return;
+        }
+        const ImageBinding& b = ref.images[ii->second];
+        if (b.storage || b.depth != has_c || b.kind) {
+            reject(b.storage ? "storage image binding"
+                   : b.kind  ? "integer image binding"
+                             : "the reference's depth binding does not match the sample's comparison");
+            return;
+        }
+        const bool unnormalized = in.unorm || (si->second < opt.sampler_force_unnormalized.size() && opt.sampler_force_unnormalized[si->second]);
+        Id image, sampler;
+        if (ref.bindless) {
+            // The slots, from the params block (StageParams::image_index /
+            // sampler_index, members 7 and 8 here).
+            const auto slot = [&](std::uint32_t member, std::uint32_t k) {
+                return m.load(t_u32, m.access_chain(p_uni_u32, ubo_var, {cu(member), cu(k / 4), cu(k % 4)}));
+            };
+            image = m.load(image_types[ii->second],
+                           m.access_chain(m.type_pointer(spv::ScUniformConstant, image_types[ii->second]), image_vars[ii->second],
+                                          {slot(7, ii->second)}));
+            sampler = m.load(m.type_sampler(), m.access_chain(m.type_pointer(spv::ScUniformConstant, m.type_sampler()), sampler_vars[si->second],
+                                                              {slot(8, si->second)}));
+        } else {
+            image = m.load(image_types[ii->second], image_vars[ii->second]);
+            sampler = m.load(m.type_sampler(), sampler_vars[si->second]);
+        }
+        const Id sampled = m.emit(spv::OpSampledImage, m.type_sampled_image(image_types[ii->second]), {image, sampler});
+        int va = in.vaddr;
+        const auto vgpr = [&](int idx) { return value(256 + idx); };
+        Id offset = 0, bias = 0, dx = 0, dy = 0, lod = 0;
+        std::vector<Id> offs;
+        if (has_o) {
+            const Id packed = m.emit(spv::OpBitcast, t_i32, {as_u(vgpr(va++))});
+            const int nc = coord_count(b.dim, false);
+            for (int k = 0; k < nc; ++k) offs.push_back(m.emit(spv::OpBitFieldSExtract, t_i32, {packed, cu(8u * static_cast<std::uint32_t>(k)), cu(6)}));
+            offset = nc == 1 ? offs[0] : m.emit(spv::OpCompositeConstruct, nc == 2 ? t_v2i : t_v3i, offs);
+            if (runtime_sample_offsets() || b.cube) m.capability(spv::CapImageGatherExtended);
+        }
+        if (has_b) bias = as_f(vgpr(va++));
+        const Id dref = has_c ? as_f(vgpr(va++)) : 0;  // after the bias, before derivatives and coordinates
+        std::vector<Id> gx, gy;
+        if (has_d) {
+            const int ng = coord_count(b.dim, false);
+            for (int k = 0; k < ng; ++k) gx.push_back(as_f(vgpr(va++)));
+            for (int k = 0; k < ng; ++k) gy.push_back(as_f(vgpr(va++)));
+        }
+        const int ncoord = coord_count(b.dim, b.arrayed);
+        std::vector<Id> coords;
+        for (int k = 0; k < ncoord; ++k) coords.push_back(as_f(vgpr(va++)));
+        if (b.cube) {  // the translator's cube conversion (translate.cpp mimg)
+            coords[0] = fsub(coords[0], cf(1.0f));
+            coords[1] = fsub(coords[1], cf(1.0f));
+            coords[2] = ext(spv::GlslFma, {ext(spv::GlslFloor, {fdiv(coords[2], cf(8.0f))}), cf(-2.0f), coords[2]});
+        }
+        if (unnormalized && !b.cube) {
+            m.capability(spv::CapImageQuery);
+            const int ns = coord_count(b.dim, false), nq = coord_count(b.dim, b.arrayed);
+            const Id size = m.emit(spv::OpImageQuerySizeLod, nq == 1 ? t_i32 : nq == 2 ? t_v2i : t_v3i, {image, m.emit(spv::OpBitcast, t_i32, {cu(0)})});
+            for (int k = 0; k < ns; ++k) {
+                const Id extent = nq == 1 ? size : extract(t_i32, size, static_cast<std::uint32_t>(k));
+                const Id scale = fdiv(cf(1.0f), m.emit(spv::OpConvertSToF, t_f32, {extent}));
+                coords[static_cast<std::size_t>(k)] = fmul(coords[static_cast<std::size_t>(k)], scale);
+                if (!gx.empty()) {
+                    gx[static_cast<std::size_t>(k)] = fmul(gx[static_cast<std::size_t>(k)], scale);
+                    gy[static_cast<std::size_t>(k)] = fmul(gy[static_cast<std::size_t>(k)], scale);
+                }
+            }
+        }
+        if (offset && !b.cube && !runtime_sample_offsets()) {
+            // As the translator (translate.cpp mimg): without maintenance8 the
+            // coordinates move by the offset in level 0's texels.
+            m.capability(spv::CapImageQuery);
+            const int nq = coord_count(b.dim, b.arrayed);
+            const Id size = m.emit(spv::OpImageQuerySizeLod, nq == 1 ? t_i32 : nq == 2 ? t_v2i : t_v3i, {image, m.emit(spv::OpBitcast, t_i32, {cu(0)})});
+            for (std::size_t k = 0; k < offs.size(); ++k) {
+                const Id extent = nq == 1 ? size : extract(t_i32, size, static_cast<std::uint32_t>(k));
+                coords[k] = ext(spv::GlslFma, {m.emit(spv::OpConvertSToF, t_f32, {offs[k]}),
+                                               fdiv(cf(1.0f), m.emit(spv::OpConvertSToF, t_f32, {extent})), coords[k]});
+            }
+            offset = 0;
+        }
+        const Id coord = ncoord == 1 ? coords[0] : m.emit(spv::OpCompositeConstruct, ncoord == 2 ? t_v2f : ncoord == 3 ? t_v3f : t_v4f, coords);
+        if (!gx.empty()) {
+            const int ng = static_cast<int>(gx.size());
+            dx = ng == 1 ? gx[0] : m.emit(spv::OpCompositeConstruct, ng == 2 ? t_v2f : t_v3f, gx);
+            dy = ng == 1 ? gy[0] : m.emit(spv::OpCompositeConstruct, ng == 2 ? t_v2f : t_v3f, gy);
+        }
+        if (has_l) lod = as_f(vgpr(va++));
+        if (has_lz) lod = cf(0.0f);
+        if (opt.stage != Stage::Pixel) {  // no derivatives outside a pixel shader: the translator samples level 0
+            if (has_b) {
+                reject("biased sample outside a pixel shader");
+                return;
+            }
+            if (!lod && gx.empty()) lod = cf(0.0f);
+        }
+        std::uint32_t mask = 0;
+        std::vector<std::uint32_t> ops = {sampled, coord};
+        if (has_c) ops.push_back(dref);
+        std::vector<std::uint32_t> extra;
+        if (bias) { mask |= spv::IoBias; extra.push_back(bias); }
+        if (lod) { mask |= spv::IoLod; extra.push_back(lod); }
+        if (dx) { mask |= spv::IoGrad; extra.push_back(dx); extra.push_back(dy); }
+        if (offset) { mask |= spv::IoOffset; extra.push_back(offset); }
+        (void)has_cl;  // the clamp operand is ignored, as by the translator
+        if (mask) {
+            ops.push_back(mask);
+            ops.insert(ops.end(), extra.begin(), extra.end());
+        }
+        Id texel;
+        if (has_c) {  // the comparison result in all four components, as the translator
+            const Id r = m.emit(lod || dx ? spv::OpImageSampleDrefExplicitLod : spv::OpImageSampleDrefImplicitLod, t_f32, ops);
+            texel = m.emit(spv::OpCompositeConstruct, t_v4f, {r, r, r, r});
+        } else {
+            texel = m.emit(lod || dx ? spv::OpImageSampleExplicitLod : spv::OpImageSampleImplicitLod, t_v4f, ops);
+        }
+        int out = 0;
+        for (std::uint32_t k = 0; k < 4; ++k) {
+            if ((in.dmask >> k) & 1) write_v(in.vdata + out++, flt(extract(t_f32, texel, k)));
+        }
+        samples.push_back(in.offset);
+    }
+
+    void vintrp(const Inst& in) {
+        inst_uniform = false;  // per pixel
+        if (opt.stage != Stage::Pixel) {
+            reject("interpolation outside a pixel shader");
+            return;
+        }
+        write_v(in.dst, flt(extract(t_f32, attr(in.attr), in.attr_chan)));
+    }
+
+    void exp(const Inst& in) {
+        // The translator exports whatever EXEC holds; a pixel whose bit is clear
+        // here must be killed at s_endpgm (checked there).
+        const bool vertex = opt.stage == Stage::Vertex;
+        if (const Val e = exec_lane(); !(e.constant && e.set)) {
+            if (vertex) {
+                reject("export where EXEC is not known set in a vertex shader, which has no discard");
+                return;
+            }
+            export_execs.push_back(e);
+        }
+        if (in.tgt == 9) return;  // null export
+        // Pixel shaders export colour targets 0-7; vertex shaders the position (12) and params (32-63).
+        if (vertex ? !(in.tgt == 12 || (in.tgt >= 32 && in.tgt < 64)) : in.tgt >= 8) {
+            reject(vertex ? "only position and param exports are lifted in a vertex shader, not target " + std::to_string(in.tgt)
+                          : std::string("only colour exports are lifted"));
+            return;
+        }
+        std::vector<Id> comps(4, cf(0.0f));
+        if (in.compr) {
+            for (std::uint32_t pair = 0; pair < 2; ++pair) {
+                if (!((in.dmask >> (pair * 2)) & 3)) continue;
+                if (const auto pk = packed_pairs.find(value(256 + in.vsrc[pair]).id); pk != packed_pairs.end() && pk->second.block == m.blocks()) {
+                    if (native_rtz) {
+                        const Id v2 = m.emit(spv::OpCompositeConstruct, t_v2f, {pk->second.lo, pk->second.hi});
+                        const Id r = m.emit(spv::OpFConvert, t_v2f, {m.emit(spv::OpFConvert, t_v2h, {v2})});
+                        comps[pair * 2] = m.emit(spv::OpCompositeExtract, t_f32, {r, 0u});
+                        comps[pair * 2 + 1] = m.emit(spv::OpCompositeExtract, t_f32, {r, 1u});
+                    } else {
+                        comps[pair * 2] = emit_rtz_half(m, {t_bool, t_u32, t_i32, t_f32}, pk->second.lo);
+                        comps[pair * 2 + 1] = emit_rtz_half(m, {t_bool, t_u32, t_i32, t_f32}, pk->second.hi);
+                    }
+                    continue;
+                }
+                const Id w = as_u(value(256 + in.vsrc[pair]));
+                if (native_rtz) {  // f16 to f32 is exact
+                    const Id r = m.emit(spv::OpFConvert, t_v2f, {m.emit(spv::OpBitcast, t_v2h, {w})});
+                    comps[pair * 2] = m.emit(spv::OpCompositeExtract, t_f32, {r, 0u});
+                    comps[pair * 2 + 1] = m.emit(spv::OpCompositeExtract, t_f32, {r, 1u});
+                    continue;
+                }
+                comps[pair * 2] = unpack_half(ibin(spv::OpBitwiseAnd, w, cu(0xffff)));
+                comps[pair * 2 + 1] = unpack_half(ibin(spv::OpShiftRightLogical, w, cu(16)));
+            }
+        } else {
+            for (std::uint32_t k = 0; k < 4; ++k) {
+                if ((in.dmask >> k) & 1) comps[k] = as_f(value(256 + in.vsrc[k]));
+            }
+        }
+        if (vertex) {  // the translator stores all four components of the position and of a param
+            const Id value = m.emit(spv::OpCompositeConstruct, t_v4f, comps);
+            if (in.tgt == 12) {
+                m.store(out_position(), value);
+            } else {
+                for (const Id var : param_outputs(static_cast<int>(in.tgt) - 32)) m.store(var, value);
+            }
+            exports.push_back(in.offset);
+            return;
+        }
+        const Id var = out_param(in.tgt);
+        if (in.dmask == 0xf) {
+            m.store(var, m.emit(spv::OpCompositeConstruct, t_v4f, comps));
+        } else {
+            Id cur_v = m.load(t_v4f, var);
+            for (std::uint32_t k = 0; k < 4; ++k) {
+                if ((in.dmask >> k) & 1) cur_v = m.emit(spv::OpCompositeInsert, t_v4f, {comps[k], cur_v, k});
+            }
+            m.store(var, cur_v);
+        }
+        exports.push_back(in.offset);
+    }
+
+    void lift_inst(const Inst& in) {
+        switch (in.enc) {
+        case Enc::SOP1: sop1(in); break;
+        case Enc::SOP2: sop2(in); break;
+        case Enc::SOPC: sopc(in); break;
+        case Enc::SOPK: sopk(in); break;
+        case Enc::SOPP: sopp(in); break;
+        case Enc::SMRD: smrd(in); break;
+        case Enc::VOP1: case Enc::VOP2: case Enc::VOPC: case Enc::VOP3: valu(in); break;
+        case Enc::VINTRP: vintrp(in); break;
+        case Enc::MIMG: mimg(in); break;
+        case Enc::MTBUF: mtbuf(in); break;
+        case Enc::EXP: exp(in); break;
+        default: reject(std::string(mnemonic(in) ? mnemonic(in) : "unknown") + " is not lifted"); break;
+        }
+    }
+
+    // ---- scalar liveness after a region ---------------------------------------------
+    // Scalar state an instruction reads and redefines, for the instructions the
+    // lifter accepts. False for anything else (treated as reading everything).
+    static bool scalar_rw(const Inst& in, std::set<int>& r, std::set<int>& w) {
+        const auto key = [](std::uint16_t c) -> int {
+            if (c < 104) return c;
+            if (c >= 112 && c < 124) return 200 + c - 112;
+            if (c == kM0) return kKeyM0;
+            if (c == kExecLo || c == kExecHi) return kKeyExec;
+            if (c == kVccLo || c == kVccHi) return kKeyVcc;
+            if (c == kScc) return kKeyScc;
+            return -1;
+        };
+        const auto rd = [&](std::uint16_t c) {
+            if (const int k = key(c); k >= 0) r.insert(k);
+            if (c == kVccz) r.insert(kKeyVcc);
+            if (c == kExecz) r.insert(kKeyExec);
+        };
+        const auto rd_pair = [&](std::uint16_t c) {
+            rd(c);
+            if (c < 103) rd(static_cast<std::uint16_t>(c + 1));
+        };
+        const auto wr = [&](std::uint16_t c) {
+            if (const int k = key(c); k >= 0) w.insert(k);
+        };
+        const auto wr_pair = [&](std::uint16_t c) {
+            wr(c);
+            if (c < 103) wr(static_cast<std::uint16_t>(c + 1));
+        };
+        switch (in.enc) {
+        case Enc::SOP1:
+            if (in.op == 3) { rd(in.src0); wr(in.dst); return true; }
+            if (in.op == 4) { rd_pair(in.src0); wr_pair(in.dst); return true; }
+            if (in.op == 10) { rd_pair(in.src0); wr_pair(in.dst); w.insert(kKeyScc); return true; }
+            if (in.op >= 36 && in.op <= 43) { rd_pair(in.src0); r.insert(kKeyExec); wr_pair(in.dst); w.insert(kKeyExec); w.insert(kKeyScc); return true; }
+            return false;
+        case Enc::SOP2:
+            if (in.op == 15 || in.op == 17 || in.op == 19 || in.op == 21 || in.op == 23) {
+                rd_pair(in.src0); rd_pair(in.src1); wr_pair(in.dst); w.insert(kKeyScc); return true;
+            }
+            return false;
+        case Enc::SOPC:
+            rd(in.src0);
+            rd(in.src1);
+            w.insert(kKeyScc);
+            return in.op <= 13;
+        case Enc::SOPK:
+            if (in.op == 0 || in.op == 18) { wr(in.dst); return true; }
+            if (in.op == 2) { rd(in.dst); r.insert(kKeyScc); wr(in.dst); return true; }
+            if (in.op >= 3 && in.op <= 14) { rd(in.dst); w.insert(kKeyScc); return true; }
+            if (in.op == 15 || in.op == 16) { rd(in.dst); wr(in.dst); if (in.op == 15) w.insert(kKeyScc); return true; }
+            return in.op == 19 || in.op == 21;
+        case Enc::SOPP:
+            if (in.op == 1 || in.op == 8) r.insert(kKeyExec);
+            if (in.op == 4 || in.op == 5) r.insert(kKeyScc);
+            if (in.op == 6 || in.op == 7) r.insert(kKeyVcc);
+            return in.op == 0 || in.op == 1 || in.op == 2 || (in.op >= 4 && in.op <= 8) || in.op == 12 ||
+                   (in.op >= 13 && in.op <= 22 && in.op != 18);
+        case Enc::SMRD: {
+            const int count = in.op < 8 ? (1 << in.op) : (in.op < 13 ? (1 << (in.op - 8)) : 0);
+            if (!count) return false;
+            rd_pair(in.src0);
+            if (!in.imm_flag && !in.has_literal) rd(static_cast<std::uint16_t>(in.imm));
+            for (int k = 0; k < count; ++k) wr(static_cast<std::uint16_t>(in.sdst + k));
+            return true;
+        }
+        case Enc::VOP1: case Enc::VOP2: case Enc::VOPC: case Enc::VOP3:
+            rd(in.src0);
+            if (in.enc != Enc::VOP1) rd(in.src1);
+            if (in.enc == Enc::VOP3) {
+                if (in.op >= 0x140 && in.op < 0x160) rd(in.src2);
+                if (in.op == 0x100 || (in.op >= 0x128 && in.op <= 0x12a)) rd_pair(in.src2);  // select mask, carry in
+                if (in.op < 0x100 || (in.op >= 0x125 && in.op <= 0x12a)) wr_pair(in.sdst);   // comparison, carry out
+            }
+            if (in.enc == Enc::VOPC || (in.enc == Enc::VOP2 && in.op >= 37 && in.op <= 42)) w.insert(kKeyVcc);
+            if (in.enc == Enc::VOP2 && (in.op == 0 || (in.op >= 40 && in.op <= 42))) r.insert(kKeyVcc);
+            return true;
+        case Enc::MIMG:
+            for (int k = 0; k < (in.r128 ? 4 : 8); ++k) rd(static_cast<std::uint16_t>(in.srsrc + k));
+            for (int k = 0; k < 4; ++k) rd(static_cast<std::uint16_t>(in.ssamp + k));
+            return true;
+        case Enc::MTBUF:
+            if (in.op >= 4) return false;
+            rd_pair(in.srsrc);  // the V# the reference traced to its binding
+            return true;
+        case Enc::VINTRP: case Enc::EXP:
+            return true;
+        default:
+            return false;
+        }
+    }
+
+    // The EXEC writes a kill region may make: its first instruction masks EXEC
+    // with the guard, the second may widen it, and the last may restore it.
+    bool kill_exec_write(Region& r, const Inst& in) {
+        if (in.offset == r.start) {
+            std::uint16_t other = 0xffff;
+            if (in.enc == Enc::SOP2 && in.op == 15 && in.dst == kExecLo) {
+                if (in.src0 == kExecLo) other = in.src1;
+                else if (in.src1 == kExecLo) other = in.src0;
+            }
+            if (other == 0xffff || !same_lane(read_lane(other), r.guard)) {
+                reject("the s_cbranch_scc0 region does not begin by masking EXEC with the mask SCC tested");
+                return false;
+            }
+            return true;
+        }
+        if (in.offset == r.start + 4 && in.enc == Enc::SOP1 && in.op == 10 && in.dst == kExecLo && in.src0 == kExecLo) {
+            r.widened = true;
+            widen_ok = true;
+            return true;
+        }
+        return false;  // later EXEC writes follow the region rule in write_lane
+    }
+
+    const Inst* inst_at(std::uint32_t offset) const {
+        const auto it = std::lower_bound(prog.insts.begin(), prog.insts.end(), offset,
+                                         [](const Inst& in, std::uint32_t off) { return in.offset < off; });
+        return it != prog.insts.end() && it->offset == offset ? &*it : nullptr;
+    }
+    Construct* construct_at(std::uint32_t offset) {
+        for (Construct& c : constructs) {
+            if (c.branch == offset) return &c;
+        }
+        return nullptr;
+    }
+
+    // An if on a scalar condition: a selection whose then arm runs where the
+    // branch falls through. Every lane takes the same arm, so the arms are
+    // plain structured control flow.
+    void open_arm(Construct& c, std::uint64_t seq) {
+        Arm a;
+        a.c = &c;
+        a.seq = seq;
+        a.merge = m.fresh();
+        a.then_label = m.fresh();
+        a.else_label = m.fresh();
+        a.reg0 = reg;
+        a.lanes0 = lanes;
+        a.to_float0 = to_float;
+        a.to_word0 = to_word;
+        a.scc0 = scc_mask;
+        a.scc_uniform0 = scc_uniform;
+        a.scc_valid0 = scc_valid;
+        a.poisoned0 = poisoned;
+        // s_cbranch_scc0 and s_cbranch_vccz jump where their bit is clear, so the then arm runs where it is set;
+        // s_cbranch_scc1 and s_cbranch_vccnz the other way round.
+        const Val bit = c.op <= 5 ? scc_mask : lanes.at(kKeyVcc);
+        const Id cond = bit.constant ? m.const_bool(bit.set != c.negate) : c.negate ? m.emit(spv::OpLogicalNot, t_bool, {bit.id}) : bit.id;
+        m.emit_void(spv::OpSelectionMerge, {a.merge, 0u});
+        m.emit_void(spv::OpBranchConditional, {cond, a.then_label, a.else_label});
+        cur_label = m.label(a.then_label);
+        arms.push_back(std::move(a));
+        ++if_constructs;
+    }
+    // The then arm ends: its values are kept for the merge, and the else arm
+    // (or an empty else block) starts from the state at the branch.
+    void then_to_else(Arm& a) {
+        a.reg1 = reg;
+        a.lanes1 = lanes;
+        a.scc1v = scc_mask;
+        a.scc_uniform1 = scc_uniform;
+        a.scc_valid1 = scc_valid;
+        a.poisoned1 = poisoned;
+        m.emit_void(spv::OpBranch, {a.merge});
+        a.then_end = cur_label;
+        reg = a.reg0;
+        lanes = a.lanes0;
+        to_float = a.to_float0;
+        to_word = a.to_word0;
+        scc_mask = a.scc0;
+        scc_uniform = a.scc_uniform0;
+        scc_valid = a.scc_valid0;
+        poisoned = a.poisoned0;
+        cur_label = m.label(a.else_label);
+        a.in_else = true;
+    }
+    // The join: values the arms left different become phis, typed as the then
+    // arm's value (the else arm, still open, converts); conversions made inside
+    // the arms are forgotten.
+    void merge_arms(Arm& a) {
+        const auto same = [](const Val& x, const Val& y) {
+            return x.kind == y.kind && x.constant == y.constant && (x.constant ? (x.kind == Kind::Lane ? x.set == y.set : x.bits == y.bits) : x.id == y.id);
+        };
+        const auto at = [&](const std::map<int, Val>& arm, int key) {
+            if (const auto it = arm.find(key); it != arm.end()) return it->second;
+            if (const auto it = a.reg0.find(key); it != a.reg0.end()) return it->second;
+            return initial_value(key);
+        };
+        struct Phi {
+            int key;
+            Kind kind;
+            Id then_value, else_value;
+            bool uni;  // both arms' values are uniform, and so is the condition
+        };
+        std::vector<Phi> phis;
+        std::set<int> lane_keys;
+        for (const auto& [k, v] : a.lanes1) lane_keys.insert(k);
+        for (const auto& [k, v] : lanes) lane_keys.insert(k);
+        std::map<int, Val> merged_lanes;
+        std::set<int> lost = a.poisoned1;
+        lost.insert(poisoned.begin(), poisoned.end());
+        for (int k : lane_keys) {
+            const auto t = a.lanes1.find(k), e = lanes.find(k);
+            if (t == a.lanes1.end() || e == lanes.end()) {
+                // A lane mask on one arm only: unknown after the join. EXEC and VCC
+                // have no word form, so a missing mask already rejects their reads;
+                // an SGPR pair is poisoned, words and mask alike.
+                if (k != kKeyVcc && k != kKeyExec) {
+                    lost.insert(k);
+                    lost.insert(k + 1);
+                }
+                continue;
+            }
+            if (same(t->second, e->second)) {
+                merged_lanes[k] = t->second;
+            } else {
+                phis.push_back({k, Kind::Lane, t->second.id, e->second.id, uniform(t->second) && uniform(e->second)});
+            }
+        }
+        std::set<int> keys;
+        for (const auto& [k, v] : a.reg1) keys.insert(k);
+        for (const auto& [k, v] : reg) keys.insert(k);
+        std::map<int, Val> merged;
+        for (int k : keys) {
+            if (lane_keys.count(k) || (k > 0 && k < 104 && lane_keys.count(k - 1)) || lost.count(k)) continue;  // a lane mask's words, or poisoned
+            const Val t = at(a.reg1, k), e = at(reg, k);
+            if (same(t, e)) {
+                merged[k] = t;
+                continue;
+            }
+            phis.push_back({k, t.kind, t.id, t.kind == Kind::Float ? as_f(e) : as_u(e), uniform(t) && uniform(e)});
+        }
+        const bool scc_same = a.scc_valid1 && scc_valid && a.scc_uniform1 == scc_uniform && same(a.scc1v, scc_mask);
+        const bool scc_phi = !scc_same && a.scc_valid1 && scc_valid && a.scc_uniform1 && scc_uniform;
+        const Id else_end = cur_label;
+        m.emit_void(spv::OpBranch, {a.merge});
+        cur_label = m.label(a.merge);
+        for (const Phi& p : phis) {
+            const Id type = p.kind == Kind::Lane ? t_bool : p.kind == Kind::Float ? t_f32 : t_u32;
+            const Id id = m.emit(spv::OpPhi, type, {p.then_value, a.then_end, p.else_value, else_end});
+            if (p.uni) uniform_ids.insert(id);
+            if (p.kind == Kind::Lane) {
+                merged_lanes[p.key] = lane(id);
+            } else {
+                merged[p.key] = p.kind == Kind::Float ? flt(id) : word(id);
+            }
+        }
+        if (scc_phi) {
+            scc_mask = lane(m.emit(spv::OpPhi, t_bool, {a.scc1v.id, a.then_end, scc_mask.id, else_end}));
+        } else if (!scc_same) {
+            scc_valid = false;
+        }
+        reg = std::move(merged);
+        poisoned = std::move(lost);
+        lanes = std::move(merged_lanes);
+        to_float = a.to_float0;
+        to_word = a.to_word0;
+        static const char* const kBranch[4] = {"s_cbranch_scc0", "s_cbranch_scc1", "s_cbranch_vccz", "s_cbranch_vccnz"};
+        res.proof.push_back("if at " + hex_offset(a.c->branch) + " (" + kBranch[a.c->op - 4] + "): " +
+                            (a.c->op <= 5 ? "SCC from a scalar compare" : "VCC computed only from constants, user data and loads") +
+                            ", the same in every lane; " + (a.c->else_jump ? "then and else arms" : "a then arm") +
+                            " joined at " + hex_offset(a.c->join) + " with " + std::to_string(phis.size()) + " phis");
+    }
+    void close_arm() {
+        Arm& a = arms.back();
+        if (!a.in_else) then_to_else(a);  // an if without an else arm: an empty else block
+        merge_arms(a);
+        arms.pop_back();
+    }
+
+    // Whether the instruction at `at` runs after region `r`: on every path
+    // (its writes end the region's values), on some (an if arm the region is
+    // not in: its reads count, its writes do not), or never (the other arm of
+    // an if the region is inside).
+    enum class Path { Every, Some, Never };
+    static int arm_of(const Construct& c, std::uint32_t at) {
+        if (at >= c.branch + 4 && at < (c.else_jump ? c.else_jump : c.join)) return 1;
+        if (c.else_jump && at >= c.else_start && at < c.join) return 2;
+        return 0;
+    }
+    Path path_after(const Region& r, std::uint32_t at) const {
+        Path p = Path::Every;
+        for (const Construct& c : constructs) {
+            if (!(at > c.branch && at < c.join)) continue;
+            const int arm_at = arm_of(c, at), arm_r = r.start > c.branch && r.start < c.join ? arm_of(c, r.start) : 0;
+            if (arm_r && arm_at && arm_at != arm_r) return Path::Never;
+            if (!arm_at || arm_at != arm_r) p = Path::Some;
+        }
+        return p;
+    }
+
+    void close_region(Region& r, std::size_t next_index) {
+        r.closed = true;
+        std::set<int> live = r.scalar_writes;
+        live.erase(kKeyExec);  // EXEC changes inside regions are rejected where they happen, or handled below
+        std::string exec_after;
+        bool divergent = false;
+        if (r.kill) {
+            // Skipped, the region leaves EXEC as it was at the branch. Where the
+            // lifted EXEC differs, or the region widened it, the lift can differ
+            // from GCN only in pixels whose guard bit is clear.
+            const auto it = lanes.find(kKeyExec);
+            const bool same = it != lanes.end() && same_lane(it->second, r.exec_before);
+            if (r.quad_exact) {
+                exec_after = "every pixel computed the region, so the lift differs from GCN only in quads where no pixel survives";
+                kill_proofs.push_back({r.guard, false});
+                divergent = true;
+            } else {
+                exec_after = same ? "EXEC is as it was at the branch" : "EXEC differs from the skipped path only where the guard bit is clear";
+                divergent = r.widened || !same;
+                if (divergent) kill_proofs.push_back({r.guard, true});
+            }
+            ++kill_regions;
+        }
+        for (std::size_t i = next_index; i < prog.insts.size() && !live.empty(); ++i) {
+            const Inst& in = prog.insts[i];
+            const Path path = path_after(r, in.offset);
+            if (path == Path::Never) continue;
+            std::set<int> rd, wr;
+            if (!scalar_rw(in, rd, wr)) {
+                cur = in.offset;
+                reject("cannot show the scalar writes of region " + hex_offset(r.start) + "-" + hex_offset(r.end) + " are dead: " +
+                       (mnemonic(in) ? mnemonic(in) : "unknown") + " is not modelled");
+                return;
+            }
+            for (int k : live) {
+                if (rd.count(k)) {
+                    cur = in.offset;
+                    reject(key_name(k) + " is written inside region " + hex_offset(r.start) + "-" + hex_offset(r.end) +
+                           " (where GCN runs the block for every lane if any lane needs it) and read here");
+                    return;
+                }
+            }
+            if (path == Path::Every) {
+                for (int k : wr) live.erase(k);
+            }
+        }
+        std::string names;
+        for (int k : r.scalar_writes) names += (names.empty() ? "" : ", ") + key_name(k);
+        std::string how;
+        if (!r.kill) {
+            how = ": writes masked by EXEC at " + hex_offset(r.branch) + ", and EXEC set inside only within it";
+        } else if (r.quad_exact) {
+            how = ": s_cbranch_scc0 at " + hex_offset(r.branch) + " tests the mask the region ANDs into EXEC and widens to whole quads; " +
+                  exec_after + "; s_endpgm kills exactly the guard's clear pixels";
+        } else {
+            how = ": s_cbranch_scc0 at " + hex_offset(r.branch) + " tests the mask the region ANDs into EXEC first" +
+                  (r.widened ? " and widens (each pixel keeps its own bit)" : ", so a pixel whose bit is clear writes nothing either way") + "; " +
+                  exec_after + (divergent ? "; s_endpgm kills exactly the guard's clear pixels and no implicit-LOD sample follows" : "");
+        }
+        res.proof.push_back("region " + hex_offset(r.start) + "-" + hex_offset(r.end) + how +
+                            "; samples only where EXEC is known set, no memory writes" +
+                            (names.empty() ? "" : "; scalar writes (" + names + ") are redefined before any later read"));
+    }
+
+    // ---- module ----------------------------------------------------------------------
+    void emit() {
+        m.capability(spv::CapShader);
+        m.capability(spv::CapInt64);
+        m.memory_model(0 /* Logical */, 1 /* GLSL450 */);
+        t_void = m.type_void();
+        t_bool = m.type_bool();
+        t_u32 = m.type_int(32, false);
+        t_i32 = m.type_int(32, true);
+        t_u64 = m.type_int(64, false);
+        t_f32 = m.type_float(32);
+        t_v2f = m.type_vector(t_f32, 2);
+        native_rtz = native_half_rtz() && program_allows_native_half_rtz(prog);
+        if (native_rtz) {
+            m.capability(spv::CapFloat16);
+            m.capability(spv::CapDenormPreserve);
+            m.capability(spv::CapRoundingModeRTZ);
+            t_v2h = m.type_vector(m.type_float(16), 2);
+        }
+        t_v3f = m.type_vector(t_f32, 3);
+        t_v4f = m.type_vector(t_f32, 4);
+        t_v2i = m.type_vector(t_i32, 2);
+        t_v3i = m.type_vector(t_i32, 3);
+        t_v4u = m.type_vector(t_u32, 4);
+        p_in_v4f = m.type_pointer(spv::ScInput, t_v4f);
+        p_in_u32 = m.type_pointer(spv::ScInput, t_u32);
+        p_in_v4u = m.type_pointer(spv::ScInput, t_v4u);
+        p_in_bool = m.type_pointer(spv::ScInput, t_bool);
+        p_out_v4f = m.type_pointer(spv::ScOutput, t_v4f);
+        p_uni_u32 = m.type_pointer(spv::ScUniform, t_u32);
+
+        // StageParams, as the translator declares it: { u64 l1_table; u64
+        // reserved; uvec4 user[4]; uint cb_valid; uvec4 cb_bias_dw[4];
+        // uvec4 cb_stride[4]; uvec4 cb_w3[4] }.
+        const Id t_user_arr = m.type_array(t_v4u, cu(4));
+        m.decorate(t_user_arr, spv::DecArrayStride, {16});
+        const Id t_bias_arr = t_user_arr;  // the same uvec4[4] type (types are deduplicated): decorated once
+        // With the reference bindless (TranslateOptions::bindless), the image
+        // and sampler slots follow, at StageParams's own offsets.
+        std::vector<Id> members = {t_u64, t_u64, t_user_arr, t_u32, t_bias_arr, t_bias_arr, t_bias_arr};
+        if (ref.bindless) {
+            members.push_back(t_bias_arr);
+            members.push_back(t_bias_arr);
+        }
+        const Id t_ubo = m.type_struct(members);
+        m.decorate(t_ubo, spv::DecBlock);
+        m.member_decorate(t_ubo, 0, spv::DecOffset, {0});
+        m.member_decorate(t_ubo, 1, spv::DecOffset, {8});
+        m.member_decorate(t_ubo, 2, spv::DecOffset, {16});
+        m.member_decorate(t_ubo, 3, spv::DecOffset, {80});
+        m.member_decorate(t_ubo, 4, spv::DecOffset, {96});
+        m.member_decorate(t_ubo, 5, spv::DecOffset, {160});
+        m.member_decorate(t_ubo, 6, spv::DecOffset, {224});
+        if (ref.bindless) {
+            m.member_decorate(t_ubo, 7, spv::DecOffset, {static_cast<std::uint32_t>(offsetof(StageParams, image_index))});
+            m.member_decorate(t_ubo, 8, spv::DecOffset, {static_cast<std::uint32_t>(offsetof(StageParams, sampler_index))});
+        }
+        ubo_var = m.global_variable(m.type_pointer(spv::ScUniform, t_ubo), spv::ScUniform);
+        m.decorate(ubo_var, spv::DecDescriptorSet, {opt.descriptor_set});
+        m.decorate(ubo_var, spv::DecBinding, {kBindingParams});
+        m.name(ubo_var, "params");
+        interface.push_back(ubo_var);
+
+        // The reference's bindings, same numbers and types - or, bindless, the
+        // same global arrays it reads (one alias per image type).
+        std::map<Id, Id> image_arrays;
+        const auto global_array = [&](Id t_elem, std::uint32_t binding, const char* name) {
+            const Id var = m.global_variable(m.type_pointer(spv::ScUniformConstant, m.type_runtime_array(t_elem)), spv::ScUniformConstant);
+            m.decorate(var, spv::DecDescriptorSet, {opt.bindless_set});
+            m.decorate(var, spv::DecBinding, {binding});
+            m.name(var, name);
+            interface.push_back(var);
+            m.capability(spv::CapRuntimeDescriptorArray);
+            m.capability(spv::CapSampledImageArrayDynamicIndexing);
+            return var;
+        };
+        for (std::size_t k = 0; k < ref.images.size(); ++k) {
+            const ImageBinding& b = ref.images[k];
+            if (b.dim == spv::Dim1D) m.capability(b.storage ? spv::CapImage1D : spv::CapSampled1D);
+            if (b.dim == spv::DimCube && b.arrayed) m.capability(spv::CapSampledCubeArray);
+            const Id t_img = m.type_image(b.kind == 1 ? t_u32 : b.kind == 2 ? t_i32 : t_f32, static_cast<spv::Dim>(b.dim), b.depth,
+                                          b.arrayed, false, b.storage ? 2 : 1);
+            Id var;
+            if (ref.bindless) {
+                auto arr = image_arrays.find(t_img);
+                if (arr == image_arrays.end()) {
+                    arr = image_arrays.emplace(t_img, global_array(t_img, b.storage ? kBindlessStorageImages : kBindlessImages,
+                                                                  b.storage ? "storage_images" : "images")).first;
+                    if (b.storage) m.capability(spv::CapStorageImageArrayDynamicIndexing);
+                }
+                var = arr->second;
+            } else {
+                var = m.global_variable(m.type_pointer(spv::ScUniformConstant, t_img), spv::ScUniformConstant);
+                m.decorate(var, spv::DecDescriptorSet, {opt.descriptor_set});
+                m.decorate(var, spv::DecBinding, {b.binding});
+                m.name(var, "img" + std::to_string(k));
+                interface.push_back(var);
+            }
+            image_vars.push_back(var);
+            image_types.push_back(t_img);
+        }
+        Id sampler_array = 0;
+        for (std::size_t k = 0; k < ref.samplers.size(); ++k) {
+            Id var;
+            if (ref.bindless) {
+                if (!sampler_array) sampler_array = global_array(m.type_sampler(), kBindlessSamplers, "samplers");
+                var = sampler_array;
+            } else {
+                var = m.global_variable(m.type_pointer(spv::ScUniformConstant, m.type_sampler()), spv::ScUniformConstant);
+                m.decorate(var, spv::DecDescriptorSet, {opt.descriptor_set});
+                m.decorate(var, spv::DecBinding, {ref.samplers[k].binding});
+                m.name(var, "smp" + std::to_string(k));
+                interface.push_back(var);
+            }
+            sampler_vars.push_back(var);
+        }
+        if (!ref.buffers.empty()) {
+            const Id t_words = m.type_runtime_array(t_u32);
+            m.decorate(t_words, spv::DecArrayStride, {4});
+            const Id t_block = m.type_struct({t_words});
+            m.decorate(t_block, spv::DecBlock);
+            m.member_decorate(t_block, 0, spv::DecOffset, {0});
+            const Id p_block = m.type_pointer(spv::ScStorageBuffer, t_block);
+            p_ssbo_u32 = m.type_pointer(spv::ScStorageBuffer, t_u32);
+            for (std::size_t k = 0; k < ref.buffers.size(); ++k) {
+                const Id var = m.global_variable(p_block, spv::ScStorageBuffer);
+                m.decorate(var, spv::DecDescriptorSet,
+                           {opt.cb_descriptor_set < 0 ? opt.descriptor_set : static_cast<std::uint32_t>(opt.cb_descriptor_set)});
+                m.decorate(var, spv::DecBinding, {ref.buffers[k].binding});
+                m.name(var, "cb" + std::to_string(k));
+                interface.push_back(var);
+                buffer_vars.push_back(var);
+            }
+        }
+
+        fn_main = m.begin_function(t_void, m.type_function(t_void, {}));
+        m.name(fn_main, "main");
+        cur_label = m.label();
+        lanes[kKeyExec] = lane_const(true);   // every running pixel starts with its bit set
+        lanes[kKeyVcc] = lane_const(false);   // VCC starts clear
+        scc_mask = lane_const(false);         // and so does SCC
+
+        std::size_t next_region = 0;
+        std::uint64_t seq = 0;
+        for (std::size_t i = 0; i < prog.insts.size(); ++i) {
+            const Inst& in = prog.insts[i];
+            cur = in.offset;
+            // Close the regions and ifs that end here, innermost first.
+            for (;;) {
+                const bool region_due = !open_regions.empty() && in.offset >= open_regions.back()->end;
+                const bool arm_due = !arms.empty() && in.offset == arms.back().c->join && (arms.back().in_else || !arms.back().c->else_jump);
+                if (!region_due && !arm_due) break;
+                if (region_due && (!arm_due || open_regions.back()->seq > arms.back().seq)) {
+                    Region* done = open_regions.back();
+                    open_regions.pop_back();
+                    close_region(*done, i);
+                } else {
+                    close_arm();
+                }
+                if (!res.rejections.empty()) return;
+            }
+            if (block_starts.count(in.offset)) pending.clear();  // the translator's landing rule is per block
+            Construct* const branch_if = construct_at(in.offset);
+            const bool uniform_if =
+                branch_if && (branch_if->op <= 5 ? scc_valid && scc_uniform : lanes.count(kKeyVcc) && uniform(lanes.at(kKeyVcc)));
+            if (next_region < regions.size() && in.offset == regions[next_region].branch) {
+                Region& r = regions[next_region];
+                if (uniform_if) {
+                    r.disabled = true;  // an if, not a kill region
+                } else if (r.kill && !scc_valid) {
+                    reject("s_cbranch_scc0 tests an SCC an earlier if left different on its arms");
+                    return;
+                } else if (r.kill && !open_regions.empty()) {
+                    reject("s_cbranch_scc0 kill region inside another region");
+                    return;
+                } else {
+                    r.guard = scc_mask;
+                    r.exec_before = exec_lane();
+                }
+            } else if (branch_if && !uniform_if) {
+                reject(std::string(mnemonic(in)) +
+                       (branch_if->op <= 5 ? " tests an SCC that is not from a scalar compare (only an s_cbranch_scc0 without an else arm can be a kill region)"
+                                           : " tests a VCC that may differ between lanes"));
+                return;
+            }
+            if (next_region < regions.size() && in.offset >= regions[next_region].start) {
+                Region& r = regions[next_region++];
+                if (!r.disabled) {
+                    r.exec_in = r.exec_before;  // a kill region narrows it with its first instructions
+                    r.seq = ++seq;
+                    open_regions.push_back(&r);
+                }
+            }
+            note.clear();
+            inst_uniform = true;
+            Region* const starting = !open_regions.empty() && open_regions.back()->kill ? open_regions.back() : nullptr;
+            exec_write_ok = starting && kill_exec_write(*starting, in);
+            lift_inst(in);
+            if (exec_write_ok) starting->exec_in = exec_lane();
+            exec_write_ok = widen_ok = false;
+            char line[160];
+            std::snprintf(line, sizeof(line), "%06x  %-56s", in.offset, format(in).c_str());
+            res.listing += line;
+            res.listing += (open_regions.empty() ? "" : " [region]") + std::string(arms.empty() ? "" : arms.back().in_else ? " [else]" : " [then]") + note + "\n";
+            if (is_branch(in)) pending.clear();
+            if (!res.rejections.empty()) return;
+            if (uniform_if) open_arm(*branch_if, ++seq);
+            if (!arms.empty() && !arms.back().in_else && in.offset == arms.back().c->else_jump) then_to_else(arms.back());
+        }
+        for (;;) {  // what the end of the program closes
+            if (!open_regions.empty() && (arms.empty() || open_regions.back()->seq > arms.back().seq)) {
+                Region* done = open_regions.back();
+                open_regions.pop_back();
+                close_region(*done, prog.insts.size());
+            } else if (!arms.empty()) {
+                reject("an if is still open at the end of the program");
+            } else {
+                break;
+            }
+            if (!res.rejections.empty()) return;
+        }
+        if (needs_kill) {  // translate.cpp's end of main
+            const Id l_kill = m.fresh(), l_ret = m.fresh();
+            m.emit_void(spv::OpSelectionMerge, {l_ret, 0u});
+            m.emit_void(spv::OpBranchConditional, {kill_exec.constant ? m.const_bool(kill_exec.set) : kill_exec.id, l_ret, l_kill});
+            m.label(l_kill);
+            m.emit_void(spv::OpKill, {});
+            m.label(l_ret);
+        }
+        m.emit_void(spv::OpReturn, {});
+        m.end_function();
+        if (opt.stage == Stage::Vertex) {
+            // The pipeline, the pixel shader's inputs and a rect list's geometry
+            // shader are laid out from the reference's outputs: the lift must
+            // declare exactly those.
+            std::vector<std::uint32_t> params;
+            for (const auto& kv : out_params) params.push_back(static_cast<std::uint32_t>(kv.first));
+            if (params != ref.vs_params || ref.vs_clip_count || ref.vs_point_size) {
+                cur = prog.insts.back().offset;
+                reject("the lifted outputs differ from the reference's (params, clip distances or point size)");
+                return;
+            }
+            m.entry_point(spv::EmVertex, fn_main, "main", interface);
+            if (native_rtz) {
+                m.execution_mode(fn_main, spv::ExDenormPreserve, {16});
+                m.execution_mode(fn_main, spv::ExRoundingModeRTZ, {16});
+            }
+            return;
+        }
+        m.entry_point(spv::EmFragment, fn_main, "main", interface);
+        m.execution_mode(fn_main, spv::ExOriginUpperLeft);
+        if (native_rtz) {
+            m.execution_mode(fn_main, spv::ExDenormPreserve, {16});
+            m.execution_mode(fn_main, spv::ExRoundingModeRTZ, {16});
+        }
+        if (opt.early_fragment_tests) m.execution_mode(fn_main, spv::ExEarlyFragmentTests);
+    }
+
+    void finish_proof() {
+        std::vector<std::string> head;
+        const std::size_t execz_regions = static_cast<std::size_t>(std::count_if(regions.begin(), regions.end(), [](const Region& r) { return !r.kill; }));
+        head.push_back(std::to_string(prog.insts.size()) + " instructions, forward only: " + std::to_string(execz_regions) + " s_cbranch_execz regions, " +
+                       std::to_string(kill_regions) + " s_cbranch_scc0 kill regions and " + std::to_string(if_constructs) +
+                       " ifs on a bit every lane holds alike; no other branch or program-counter transfer");
+        head.push_back(std::string("EXEC per pixel or vertex: set at entry; whole-quad mode only of a constant mask or in a kill region; comparison "
+                                   "masks are the pixel's own bit; set again before every sample; ") +
+                       (needs_kill ? "a pixel whose bit is clear at s_endpgm is discarded, as by the translator, and every pixel exported with "
+                                     "its bit clear is among them"
+                                   : "set at every export and at s_endpgm (no discard)"));
+        std::string at;
+        for (std::uint32_t s : samples) at += " " + hex_offset(s);
+        head.push_back(std::to_string(samples.size()) + " image samples outside regions with EXEC set, in uniform control flow (helper "
+                       "invocations stand in for whole-quad lanes):" + at);
+        head.push_back(std::to_string(exports.size()) + " colour exports with EXEC set");
+        head.push_back(std::to_string(buffer_loads) + " scalar loads, every one from a storage buffer the reference binds; " +
+                       std::to_string(masked_writes) + " VGPR writes under a varying EXEC become selects");
+        res.proof.insert(res.proof.begin(), head.begin(), head.end());
+    }
+};
+
+}  // namespace
+
+namespace {
+LiftResult lift_stage(Stage stage, const Program& program, const TranslateOptions& options, const TranslateResult& reference) {
+    if (options.stage != stage) {
+        LiftResult wrong;
+        wrong.rejections.push_back(stage == Stage::Pixel ? "the options are not a pixel shader's" : "the options are not a vertex shader's");
+        return wrong;
+    }
+    Lifter l(program, options, reference);
+    return l.run();
+}
+}  // namespace
+
+LiftResult lift_pixel_shader(const Program& program, const TranslateOptions& options, const TranslateResult& reference) {
+    if (options.ps_clip_discard) {  // TranslateOptions::kVsOutCntlClipVarying has no lifted counterpart
+        LiftResult r;
+        r.rejections.push_back("clip distances discarded per pixel");
+        return r;
+    }
+    return lift_stage(Stage::Pixel, program, options, reference);
+}
+
+LiftResult lift_vertex_shader(const Program& program, const TranslateOptions& options, const TranslateResult& reference) {
+    if (options.vertex_formats_from_params) {  // translate.cpp load_vertex_element_from_params has no lifted counterpart yet
+        LiftResult r;
+        r.rejections.push_back("vertex formats from the params block");
+        return r;
+    }
+    if (options.vs_out_cntl & TranslateOptions::kVsOutCntlClipVarying) {
+        LiftResult r;
+        r.rejections.push_back("clip distances as a varying");
+        return r;
+    }
+    return lift_stage(Stage::Vertex, program, options, reference);
+}
+
+}  // namespace gcn

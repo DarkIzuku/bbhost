@@ -1,0 +1,140 @@
+#pragma once
+
+#include "core/imports.h"
+#include "guest_abi.h"
+#include "log.h"
+
+#include <cerrno>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <ctime>
+
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+#include <time.h>  // clock_gettime: winpthreads' on Windows
+
+inline constexpr int kSceOk = 0;
+
+// Host errno -> FreeBSD (Orbis) errno. 1..34 coincide; the rest do not.
+inline int to_freebsd(int e) {
+    if (e == 0) {
+        return 0;
+    }
+#if defined(__linux__)
+    switch (e) {
+        case EAGAIN: return 35;
+        case EDEADLK: return 11;
+        case EINPROGRESS: return 36;
+        case EALREADY: return 37;
+        case ENOTSOCK: return 38;
+        case EDESTADDRREQ: return 39;
+        case EMSGSIZE: return 40;
+        case EPROTOTYPE: return 41;
+        case ENOPROTOOPT: return 42;
+        case EPROTONOSUPPORT: return 43;
+        case ESOCKTNOSUPPORT: return 44;
+        case EOPNOTSUPP: return 45;
+        case EPFNOSUPPORT: return 46;
+        case EAFNOSUPPORT: return 47;
+        case EADDRINUSE: return 48;
+        case EADDRNOTAVAIL: return 49;
+        case ENETDOWN: return 50;
+        case ENETUNREACH: return 51;
+        case ENETRESET: return 52;
+        case ECONNABORTED: return 53;
+        case ECONNRESET: return 54;
+        case ENOBUFS: return 55;
+        case EISCONN: return 56;
+        case ENOTCONN: return 57;
+        case ESHUTDOWN: return 58;
+        case ETOOMANYREFS: return 59;
+        case ETIMEDOUT: return 60;
+        case ECONNREFUSED: return 61;
+        case ELOOP: return 62;
+        case ENAMETOOLONG: return 63;
+        case EHOSTDOWN: return 64;
+        case EHOSTUNREACH: return 65;
+        case ENOTEMPTY: return 66;
+        case EUSERS: return 68;
+        case EDQUOT: return 69;
+        case ESTALE: return 70;
+        case EREMOTE: return 71;
+        case ENOLCK: return 77;
+        case ENOSYS: return 78;
+        case EIDRM: return 82;
+        case ENOMSG: return 83;
+        case EOVERFLOW: return 84;
+        case ECANCELED: return 85;
+        case EILSEQ: return 86;
+        case EBADMSG: return 89;
+        case EMULTIHOP: return 90;
+        case ENOLINK: return 91;
+        case EPROTO: return 92;
+        case ENOTRECOVERABLE: return 95;
+        case EOWNERDEAD: return 96;
+        default: break;
+    }
+#endif
+    return e;
+}
+
+// Guest-visible errno (what __error() points at), one per thread. Every HLE
+// call that fails the libc way (-1 / NULL) must set it.
+extern thread_local int t_guest_errno;
+inline void set_guest_errno_host(int host_errno) { t_guest_errno = to_freebsd(host_errno); }
+inline void set_guest_errno_bsd(int bsd_errno) { t_guest_errno = bsd_errno; }
+// Propagate a host libc result: on -1 copy errno across. Returns r.
+inline int libc_result(int r) {
+    if (r < 0) {
+        set_guest_errno_host(errno);
+    }
+    return r;
+}
+
+inline int sce_err(int e) {
+    if (e == 0) {
+        return kSceOk;
+    }
+    return static_cast<int>(0x80020000u | (static_cast<unsigned>(to_freebsd(e)) & 0xffffu));
+}
+
+// The guest's microsecond clock and TSC tick with the monotonic clock on both
+// hosts (winpthreads' is QueryPerformanceCounter). On Windows they were
+// GetTickCount64, which moves in 15.6 ms steps whatever timeBeginPeriod says:
+// at 60 fps about one step a frame. BBHOST_CLOCK_QUANTUM_US=N (checks) puts
+// them back on steps of N us, 15625 for that clock.
+inline std::uint64_t guest_clock_quantum_us() {
+    static const std::uint64_t q = [] {
+        const char* e = std::getenv("BBHOST_CLOCK_QUANTUM_US");
+        return e ? std::strtoull(e, nullptr, 10) : 0ull;
+    }();
+    return q;
+}
+
+inline std::uint64_t monotonic_ns() {
+    timespec ts{};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    const std::uint64_t ns = static_cast<std::uint64_t>(ts.tv_sec) * 1000000000ull + static_cast<std::uint64_t>(ts.tv_nsec);
+    if (const std::uint64_t q = guest_clock_quantum_us()) return ns / (q * 1000ull) * (q * 1000ull);
+    return ns;
+}
+
+inline std::uint64_t now_us() { return monotonic_ns() / 1000ull; }
+
+// The PS4's time-stamp counter runs at a fixed 1.6 GHz and the game
+// converts sceKernelReadTsc deltas with that constant (it never asks for
+// the frequency). A synthesized 1.6 GHz counter from the monotonic clock
+// keeps its timers honest whatever the host TSC runs at (a 2.1 GHz host
+// made menus repeat keys and pace animations 1.3x too fast).
+constexpr std::uint64_t kGuestTscHz = 1600000000ull;
+inline std::uint64_t rdtsc_now() {
+    const std::uint64_t ns = monotonic_ns();
+    return ns / 1000000000ull * kGuestTscHz + ns % 1000000000ull * 16ull / 10ull;
+}
+
+GUEST_ABI int hle_ok();
+
+#define HLE_REG(name, fn) register_hle_fn((name), reinterpret_cast<void*>(fn))
