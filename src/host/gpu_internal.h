@@ -976,7 +976,7 @@ void gpu_checkpoint(unsigned kind, std::uint64_t index);
 // Logs one recorded draw by index, if it is still in the ring.
 void describe_draw_record(std::uint64_t index);
 void surface_queue_writeback(std::uint64_t base);  // after a storage-image dispatch; guest memory is not written
-bool texture_dump_locked(std::uint64_t base, const char* path, std::uint32_t level = 0, std::uint32_t layer = 0);  // the surface at `base` (blitted to RGBA8) as a PPM
+bool texture_dump_locked(std::uint64_t base, const char* path, std::uint32_t level = 0, std::uint32_t layer = 0);  // the surface at `base` (blitted to RGBA8) as a PNG or PPM, by the path
 // One line on the sampled surface at `base` - its image, its source layout and
 // how it has been kept up to date - for the F12 dump's texture table; empty
 // when there is none.

@@ -140,12 +140,26 @@ Reporting a problem
   Application, has an "Application Error" entry with the faulting module and
   exception code - send that with the log.
 
+  A wrong picture (wrong colours, a green or black screen, missing parts):
+  press F12 in the game while it shows. bbhost writes that frame, the images
+  the game drew it from and its list of draws into a folder of its own in
+  logs (logs\\f12-<date>-<time>; the log names it). Zip that folder
+  (right-click, Send to > Compressed (zipped) folder) and send it with the
+  log.
+
 Switches (environment variables)
+  Set one in a Command Prompt opened in this folder, then start from there:
+      set BBHOST_F12_PNG=1
+      run-bbhost.bat
   BBHOST_GPU_DEVICE=N      the GPU to use, by the log's "gpu: device N"
                            index or part of its name; the default is a
                            discrete GPU over an on-board one
   BBHOST_SKIP_INTRO=1      skip the company logos (bbhost.toml has it)
   BBHOST_DUMP_FRAME=N      write the displayed frame N as build/frame-N.ppm
+  BBHOST_F12_PNG=1         F12 writes PNG files (any image viewer opens
+                           them, a fifth of the size) instead of PPM
+  BBHOST_F12_TEXTURES=1    F12 also writes every texture the frame used
+                           (the game pauses while it writes them)
   BBHOST_EXIT_FLIP=N       end the run at flip N with the exit reports
   BBHOST_SAMPLE=main       the sampler: build/samples.txt + .maps
   BBHOST_HEADLESS=1        no window

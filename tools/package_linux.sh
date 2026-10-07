@@ -168,6 +168,15 @@ Reporting a problem
   GPU. If the game crashed, the log ends with a block starting "SIGSEGV pc="
   with the registers and the frames; the release's $name.debug symbolizes
   it.
+
+  A wrong picture (wrong colours, a green or black screen, missing parts):
+  press F12 in the game while it shows. bbhost writes that frame, the images
+  the game drew it from and its list of draws into a folder of its own in
+  logs/ (logs/f12-<date>-<time>; the log names it). Pack that folder
+  (tar czf f12.tar.gz logs/f12-<date>-<time>) and send it with the log.
+  BBHOST_F12_PNG=1 ./run-bbhost.sh writes PNG files instead of PPM (any
+  image viewer opens them, a fifth of the size); BBHOST_F12_TEXTURES=1 adds
+  every texture the frame used (the game pauses while it writes them).
 EOF
 
 # Packed from a local copy with plain modes: on a filesystem without them

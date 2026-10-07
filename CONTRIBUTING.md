@@ -56,8 +56,9 @@
 Bring evidence from a run:
 
 - F12 in game dumps the frame, every render target the last draws wrote and
-  the draw list to `build/f12-<flip>*`; `tools/f12_check.py` flags lost
-  clears, size mismatches and stale uploads.
+  the draw list into a folder of its own, `build/f12-<date>-<time>/` (the log
+  names it); `tools/f12_check.py <folder> <log>` flags lost clears, size
+  mismatches and stale uploads.
 - Before and after screenshots of the same place, from a copy of a save
   (`tools/menu_drive.sh` drives the game headless to a screenshot).
 - No regressions elsewhere: the smoke target, a run with

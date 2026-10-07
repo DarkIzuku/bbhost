@@ -6,6 +6,7 @@
 #if !defined(_WIN32)
 #include <dlfcn.h>
 #endif
+#include "core/image_file.h"
 #include "core/portable.h"
 #include "engine/gx_resources.h"
 
@@ -3482,7 +3483,8 @@ std::string texture_describe_locked(std::uint64_t base) {
 }
 
 // Blits level 0 / layer 0 of the surface into an RGBA8 image and writes it
-// as a PPM (any sampled format the driver can blit from, BC included).
+// as a PNG or PPM, by the path's extension (any sampled format the driver can
+// blit from, BC included).
 bool texture_dump_locked(std::uint64_t base, const char* path, std::uint32_t level, std::uint32_t layer) {
     auto it = g_surfaces.find(base);
     if (it == g_surfaces.end() || it->second.failed) return false;
@@ -3541,9 +3543,9 @@ bool texture_dump_locked(std::uint64_t base, const char* path, std::uint32_t lev
     region.imageExtent = {lw, lh, 1};
     vkCmdCopyImageToBuffer(g_cmd(), tmp, VK_IMAGE_LAYOUT_GENERAL, staging.buffer, 1, &region);
     flush_locked();
-    FILE* f = std::fopen(path, "wb");
-    if (f) {
-        std::fprintf(f, "P6\n%u %u\n255\n", lw, lh);
+    ImageFile f;
+    bool ok = f.open(path, lw, lh);
+    if (ok) {
         const auto* px = static_cast<const std::uint8_t*>(staging.map);
         std::vector<std::uint8_t> row(lw * 3);
         for (std::uint32_t y = 0; y < lh; ++y) {
@@ -3553,16 +3555,20 @@ bool texture_dump_locked(std::uint64_t base, const char* path, std::uint32_t lev
                 row[x * 3 + 1] = p[1];
                 row[x * 3 + 2] = p[2];
             }
-            std::fwrite(row.data(), 1, row.size(), f);
+            f.row(row.data());
         }
-        std::fclose(f);
+        ok = f.close();
+    }
+    if (ok) {
         host_log("texture: wrote %s (%ux%u, format %d, tiling %u, level %u layer %u)", path, lw, lh, sf.format, sf.tiling, level, layer);
+    } else {
+        host_log("texture: cannot write %s", path);
     }
     vkDestroyBuffer(g.device, staging.buffer, nullptr);
     vkFreeMemory(g.device, staging.memory, nullptr);
     vkDestroyImage(g.device, tmp, nullptr);
     vkFreeMemory(g.device, tmp_mem, nullptr);
-    return f != nullptr;
+    return ok;
 }
 
 // GPU work wrote over this range: any cached surface it covers has to be read

@@ -102,7 +102,7 @@ path at all:
 |---|---|
 | `gcn2spv` | translates and validates every shader in the game's bundles |
 | `gcndis` | disassembles GCN programs |
-| F12 in game | dumps the frame, every render target and the draw list (`tools/f12_check.py` reads them) |
+| F12 in game | dumps the frame, every render target and the draw list into a folder of its own (`tools/f12_check.py` reads it; `BBHOST_F12_PNG=1` for PNG) |
 | `BBHOST_CAPTURE_DRAW` + `drawreplay` | captures one draw with its inputs and replays it outside the game |
 | `BBHOST_VK_VALIDATE=1` | runs with the Vulkan validation layer |
 | `BBHOST_GPU_PROFILE=1` | per-pass GPU timings |

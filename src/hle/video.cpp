@@ -161,10 +161,10 @@ void present_flip(int buffer, std::uint64_t display_va, unsigned dw, unsigned dh
         refill_test = false;
         host_gpu_refill_selftest();
     }
-    if (host_gpu_take_dump_request() && display_va) {
-        char path[80];
-        std::snprintf(path, sizeof(path), "build/f12-%llu.ppm", static_cast<unsigned long long>(count));
-        host_gpu_dump_display(display_va, path, true);
+    // F12: the images and the draw list in the folder the request made.
+    if (std::string dir; host_gpu_take_dump_request(&dir) && display_va) {
+        const std::string path = dir + "/f12-" + std::to_string(count) + host_gpu_capture_ext();
+        host_gpu_dump_display(display_va, path.c_str(), true);
     }
     if (const std::uint64_t pic = g_picture.load(std::memory_order_relaxed)) {
         dw = std::min(dw, static_cast<unsigned>(pic >> 32));

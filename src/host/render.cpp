@@ -3,6 +3,7 @@
 // their guest base address; vertex and pixel shaders go through the GCN
 // translator (the vertex shader with its fetch shader inlined); index buffers
 // come straight from the imported guest memory.
+#include "core/image_file.h"
 #include "core/portable.h"
 #include "engine/gx_resources.h"
 #include "engine/gx_state.h"
@@ -25,10 +26,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <thread>
 #include <deque>
 #include <condition_variable>
 #include <memory>
+#include <mutex>
 #include <filesystem>
 #include <fstream>
 #include <set>
@@ -42,7 +45,17 @@ bool dump_rt_locked(RtImage& r, const char* path);
 bool rt_float_max_locked(RtImage& r, float* out3);
 void apply_pending_clear(RtImage& r);
 std::atomic<bool> g_dump_request{false};
+// The folder the pending F12 capture writes into (host_gpu_request_dump).
+std::mutex g_capture_mu;
+std::string g_capture_dir;
 namespace {
+
+// A file of the pending F12 capture: <its folder>/f12-<flip>-<what>.<format>.
+std::string capture_file(std::uint64_t flip, const char* what) {
+    std::lock_guard<std::mutex> lk(g_capture_mu);
+    return (g_capture_dir.empty() ? std::string("build") : g_capture_dir) + "/f12-" + std::to_string(flip) + "-" + what +
+           host_gpu_capture_ext();
+}
 
 // ---- register decoding ------------------------------------------------------
 struct CbInfo {
@@ -12960,21 +12973,20 @@ static bool draw_impl(const GpuDraw& d) {
         } else if (!dumped_this_request && s.color[0]) {
             dumped_this_request = true;
             const std::uint64_t flip = hle_video_flip_count();
-            char pth[96];
-            std::snprintf(pth, sizeof(pth), "build/f12-%llu-yebis-first.ppm", static_cast<unsigned long long>(flip));
+            std::string pth = capture_file(flip, "yebis-first");
             host_log("yebis: dumping dest 0x%llx after %s to %s", static_cast<unsigned long long>(s.color[0]->base),
-                     pl.name.c_str(), pth);
+                     pl.name.c_str(), pth.c_str());
             flush_locked();
-            gpu::dump_rt_locked(*s.color[0], pth);
+            gpu::dump_rt_locked(*s.color[0], pth.c_str());
             if (pl.ps.meta().images.size() >= 1) {
                 std::uint32_t tw[8] = {};
                 if (resolve_resource_impl(pl.ps.meta().images[0].path, s.ps_user, 8, tw)) {
                     const std::uint64_t src = tsharp_base(tw);
                     auto it = g_rts.find(src);
                     if (it != g_rts.end() && it->second.initialised) {
-                        std::snprintf(pth, sizeof(pth), "build/f12-%llu-yebis-src.ppm", static_cast<unsigned long long>(flip));
-                        host_log("yebis: dumping source 0x%llx to %s", static_cast<unsigned long long>(src), pth);
-                        gpu::dump_rt_locked(it->second, pth);
+                        pth = capture_file(flip, "yebis-src");
+                        host_log("yebis: dumping source 0x%llx to %s", static_cast<unsigned long long>(src), pth.c_str());
+                        gpu::dump_rt_locked(it->second, pth.c_str());
                     }
                 }
             }
@@ -13017,12 +13029,11 @@ static bool draw_impl(const GpuDraw& d) {
         } else if (!dumped_blur && s.color[0]) {
             dumped_blur = true;
             const std::uint64_t flip = hle_video_flip_count();
-            char pth[96];
-            std::snprintf(pth, sizeof(pth), "build/f12-%llu-yebis-blur.ppm", static_cast<unsigned long long>(flip));
+            const std::string pth = capture_file(flip, "yebis-blur");
             host_log("yebis: dumping dest 0x%llx after %s to %s", static_cast<unsigned long long>(s.color[0]->base),
-                     pl.name.c_str(), pth);
+                     pl.name.c_str(), pth.c_str());
             flush_locked();
-            gpu::dump_rt_locked(*s.color[0], pth);
+            gpu::dump_rt_locked(*s.color[0], pth.c_str());
         }
     }
     if (g_order_target && s.color[0] && s.color[0]->base == g_order_target && hle_video_flip_count() >= 2000 && g_order_logs.load() < 120) {
@@ -13142,8 +13153,75 @@ void host_gpu_hang_report() {
     }
 }
 
-void host_gpu_request_dump() { g_dump_request.store(true, std::memory_order_release); }
-bool host_gpu_take_dump_request() { return g_dump_request.exchange(false, std::memory_order_acq_rel); }
+namespace {
+
+// The folder as the player finds it: absolute, in the system's own
+// separators, as UTF-8 (a Windows user folder's name need not be ASCII).
+std::string capture_dir_shown(const std::string& dir) {
+    std::error_code ec;
+    std::filesystem::path p = std::filesystem::absolute(dir, ec);
+    if (ec) return dir;
+    const std::u8string u = p.lexically_normal().make_preferred().u8string();
+    return std::string(reinterpret_cast<const char*>(u.data()), u.size());
+}
+
+// A folder of its own for each F12 capture, beside the logs: logs/ when
+// there is one (the packages' run-bbhost writes its logs there), else
+// build/; BBHOST_CAPTURE_DIR names another place. Made at the key press, so
+// a folder that cannot be made is in the log then.
+std::string new_capture_dir() {
+    std::error_code ec;
+    std::string base;
+    if (const char* e = std::getenv("BBHOST_CAPTURE_DIR"); e && e[0]) {
+        base = e;
+    } else {
+        base = std::filesystem::is_directory("logs", ec) ? "logs" : "build";
+    }
+    const std::time_t now = std::time(nullptr);
+    std::tm tm{};
+#if defined(_WIN32)
+    localtime_s(&tm, &now);
+#else
+    localtime_r(&now, &tm);
+#endif
+    char name[40];
+    std::strftime(name, sizeof(name), "f12-%Y%m%d-%H%M%S", &tm);
+    std::string dir = base + "/" + name;
+    for (int k = 2; std::filesystem::exists(dir, ec) && k < 100; ++k) dir = base + "/" + name + "-" + std::to_string(k);
+    std::filesystem::create_directories(dir, ec);
+    if (ec) host_log("dump: F12 cannot make the folder %s: %s", capture_dir_shown(dir).c_str(), ec.message().c_str());
+    return dir;
+}
+
+}  // namespace
+
+void host_gpu_request_dump() {
+    std::lock_guard<std::mutex> lk(g_capture_mu);
+    if (g_dump_request.load(std::memory_order_acquire)) return;  // one already waits for its flip
+    g_capture_dir = new_capture_dir();
+    g_dump_request.store(true, std::memory_order_release);
+    host_log("dump: F12 capture on the next flip, into %s", capture_dir_shown(g_capture_dir).c_str());
+}
+bool host_gpu_take_dump_request(std::string* dir) {
+    std::lock_guard<std::mutex> lk(g_capture_mu);
+    if (!g_dump_request.exchange(false, std::memory_order_acq_rel)) return false;
+    if (dir) *dir = g_capture_dir;
+    return true;
+}
+std::string host_gpu_capture_dir() {
+    std::lock_guard<std::mutex> lk(g_capture_mu);
+    return g_capture_dir;
+}
+// PPM costs nothing to write (a world frame's 69 images in 0.2 s) and zips to
+// little more than PNG does (71 MB against 59); PNG is a fifth of the size on
+// disk and opens in any image viewer, for 4 s of a background thread.
+const char* host_gpu_capture_ext() {
+    static const bool png = [] {
+        const char* e = std::getenv("BBHOST_F12_PNG");
+        return e && e[0] == '1';
+    }();
+    return png ? ".png" : ".ppm";
+}
 
 // BBHOST_RT_REFILL_TEST=1 (video.cpp, once): the blood layers' lost clear on
 // the real device, at an address no guest resource uses. A 128x128 sRGB
@@ -13266,7 +13344,7 @@ void host_gpu_refill_selftest() {
 // BBHOST_DUMP_DRAWS=<n> logs the draw list on its own - same lines, no images.
 namespace {
 // A colour or depth target's texels, read back, to be written as a PPM
-// (write_target_ppm) - on the renderer's thread or, for F12, on one of its own.
+// (write_target_image) - on the renderer's thread or, for F12, on one of its own.
 struct TargetPixels {
     std::string path;
     std::uint32_t width = 0, height = 0;
@@ -13282,7 +13360,7 @@ struct TargetPixels {
 
 bool record_target_readback(RtImage& r, DevBuffer& staging, TargetPixels& out);
 void take_target_pixels(DevBuffer& staging, TargetPixels& t);
-bool write_target_ppm(const TargetPixels& t);
+bool write_target_image(const TargetPixels& t);
 }  // namespace
 
 // F12 is a request from someone playing: it must not stop the game for long.
@@ -13532,7 +13610,7 @@ void host_gpu_watch_display(std::uint64_t display_va) {
                             x->path = xp;
                             const auto* xpx = static_cast<const std::uint8_t*>(e.buf.map);
                             x->px.assign(xpx, xpx + static_cast<std::size_t>(e.width) * e.height * e.bpp);
-                            std::thread([x] { write_target_ppm(*x); }).detach();
+                            std::thread([x] { write_target_image(*x); }).detach();
                         }
                         // Every kept input, named by the flip it was taken at: the
                         // blit for the frame presented at a flip runs a flip or two
@@ -13553,7 +13631,7 @@ void host_gpu_watch_display(std::uint64_t display_va) {
                             x->path = xp;
                             const auto* xpx = static_cast<const std::uint8_t*>(in.buf.map);
                             x->px.assign(xpx, xpx + static_cast<std::size_t>(in.width) * in.height * in.bpp);
-                            std::thread([x] { write_target_ppm(*x); }).detach();
+                            std::thread([x] { write_target_image(*x); }).detach();
                         }
                         if (!k.t[0].filled || !k.t[0].buf.map) continue;
                         auto t = std::make_shared<TargetPixels>();
@@ -13596,7 +13674,7 @@ void host_gpu_watch_display(std::uint64_t display_va) {
                         auto text = std::make_shared<std::string>(std::move(list));
                         auto dpath = std::make_shared<std::string>(t->path.substr(0, t->path.size() - 4) + "-draws.txt");
                         std::thread([t, text, dpath] {
-                            write_target_ppm(*t);
+                            write_target_image(*t);
                             if (text->empty()) return;
                             if (FILE* f = std::fopen(dpath->c_str(), "wb")) {
                                 std::fwrite(text->data(), 1, text->size(), f);
@@ -13753,6 +13831,29 @@ void host_gpu_watch_display(std::uint64_t display_va) {
     }
 }
 
+namespace {
+
+// A dump's path without its ".png" or ".ppm", and that extension: what is
+// written beside it is named after it, in its format.
+std::string image_stem(const char* path, std::string* ext) {
+    std::string stem = path ? path : "build/rt";
+    *ext = ".ppm";
+    if (stem.size() > 4 && (stem.ends_with(".ppm") || stem.ends_with(".png"))) {
+        *ext = stem.substr(stem.size() - 4);
+        stem.resize(stem.size() - 4);
+    }
+    return stem;
+}
+
+// <stem>-<kind>-<base in hex><ext>
+std::string image_beside(const std::string& stem, const char* kind, std::uint64_t base, const std::string& ext) {
+    char hex[24];
+    std::snprintf(hex, sizeof(hex), "%llx", static_cast<unsigned long long>(base));
+    return stem + "-" + kind + "-" + hex + ext;
+}
+
+}  // namespace
+
 bool host_gpu_dump_display(std::uint64_t display_va, const char* path, bool all_targets) {
     std::lock_guard<GpuMutex> lock(g.mu);
     if (!g.ok) return false;
@@ -13793,7 +13894,8 @@ bool host_gpu_dump_display(std::uint64_t display_va, const char* path, bool all_
     // file beside the images - so a dump is readable without the run's log.
     // Each texture is described (T#; render target or cached surface, and
     // how that surface has been kept current) and each cached surface saved
-    // as <stem>-tex-<base>.ppm, which is what the draws actually sampled.
+    // as <stem>-tex-<base> (.png or .ppm, as the display's), which is what the
+    // draws actually sampled.
     static const bool f12_textures = [] {
         const char* e = std::getenv("BBHOST_F12_TEXTURES");
         return e && e[0] == '1';
@@ -13807,8 +13909,8 @@ bool host_gpu_dump_display(std::uint64_t display_va, const char* path, bool all_
     char* draws_text = nullptr;
     std::size_t draws_len = 0;
     if (all_targets && dump_all) {
-        std::string stem = path ? path : "build/rt";
-        if (stem.size() > 4 && stem.compare(stem.size() - 4, 4, ".ppm") == 0) stem.resize(stem.size() - 4);
+        std::string ext;
+        const std::string stem = image_stem(path, &ext);
         const std::string txt = stem + "-draws.txt";
         draws_path = txt;
 #if !defined(_WIN32)
@@ -13861,9 +13963,9 @@ bool host_gpu_dump_display(std::uint64_t display_va, const char* path, bool all_
                 const std::string d = texture_describe_locked(kv.first);
                 if (!d.empty()) {
                     std::fprintf(f, "    %s\n", d.c_str());
-                    char p[160];
-                    std::snprintf(p, sizeof(p), "%s-tex-%llx.ppm", stem.c_str(), static_cast<unsigned long long>(kv.first));
-                    if (f12_textures && saved < 400 && texture_dump_locked(kv.first, p)) ++saved;
+                    if (f12_textures && saved < 400 && texture_dump_locked(kv.first, image_beside(stem, "tex", kv.first, ext).c_str())) {
+                        ++saved;
+                    }
                 }
                 // What touched its memory: the events that made it what it is.
                 std::uint64_t span = texture_src_bytes_locked(kv.first);
@@ -13879,8 +13981,8 @@ bool host_gpu_dump_display(std::uint64_t display_va, const char* path, bool all_
     if (all_targets) {
         // The targets the recorded draws wrote, the display, and with
         // BBHOST_F12_ALL_TARGETS every colour target there is.
-        std::string stem = path ? path : "build/rt";
-        if (stem.size() > 4 && stem.compare(stem.size() - 4, 4, ".ppm") == 0) stem.resize(stem.size() - 4);
+        std::string ext;
+        const std::string stem = image_stem(path, &ext);
         std::set<std::uint64_t> want;
         if (f12_all_targets) {
             for (auto& kv : g_rts) want.insert(kv.first);
@@ -13909,9 +14011,7 @@ bool host_gpu_dump_display(std::uint64_t display_va, const char* path, bool all_
         for (std::uint64_t base : want) {
             auto it = g_rts.find(base);
             if (it == g_rts.end() || it->second.depth || !it->second.initialised) continue;
-            char p[160];
-            std::snprintf(p, sizeof(p), "%s-rt-%llx.ppm", stem.c_str(), static_cast<unsigned long long>(base));
-            add(it->second, p);
+            add(it->second, image_beside(stem, "rt", base, ext));
         }
         auto disp = g_rts.find(display_va);
         const bool have_display = disp != g_rts.end() && disp->second.initialised;
@@ -13930,7 +14030,9 @@ bool host_gpu_dump_display(std::uint64_t display_va, const char* path, bool all_
                  "background",
                  held_ms, ms(f12_start, t_list), ms(t_list, t_record), ms(t_record, t_flush), ms(t_flush, std::chrono::steady_clock::now()),
                  images.size(), draws_text ? " and the draw list" : "");
-        std::thread([images = std::move(images), draws_path, draws_text, draws_len]() mutable {
+        // Where it all went, for the player to send: the capture's folder.
+        const std::string folder = capture_dir_shown(std::filesystem::path(stem).parent_path().string());
+        std::thread([images = std::move(images), draws_path, draws_text, draws_len, folder]() mutable {
             if (draws_text) {
                 if (FILE* f = std::fopen(draws_path.c_str(), "w")) {
                     std::fwrite(draws_text, 1, draws_len, f);
@@ -13938,29 +14040,25 @@ bool host_gpu_dump_display(std::uint64_t display_va, const char* path, bool all_
                 }
                 std::free(draws_text);
             }
+            std::size_t failed = 0;
             for (const auto& t : images) {
-                write_target_ppm(*t);
+                if (!write_target_image(*t)) ++failed;
                 vkDestroyBuffer(g.device, t->staging.buffer, nullptr);
                 vkFreeMemory(g.device, t->staging.memory, nullptr);
             }
-            host_log("dump: F12 files written");
+            if (failed) host_log("dump: F12 could not write %zu of the %zu images", failed, images.size());
+            host_log("dump: F12 files written to %s - send that folder with the log", folder.c_str());
         }).detach();
         if (!have_display) {
             host_log("render: no render target at display address 0x%llx to dump", static_cast<unsigned long long>(display_va));
         }
         return have_display;
     }
-    if (dump_all) {
-        std::string stem = path ? path : "build/rt";
-        if (stem.size() > 4 && stem.compare(stem.size() - 4, 4, ".ppm") == 0) stem.resize(stem.size() - 4);
+    if (dump_all) {  // BBHOST_DUMP_ALL without F12 (F12 returned above)
         for (auto& kv : g_rts) {
             if (kv.second.depth || !kv.second.initialised) continue;
-            char p[128];
-            if (all_targets) {
-                std::snprintf(p, sizeof(p), "%s-rt-%llx.ppm", stem.c_str(), static_cast<unsigned long long>(kv.first));
-            } else {
-                std::snprintf(p, sizeof(p), "build/rt-%llx.ppm", static_cast<unsigned long long>(kv.first));
-            }
+            char p[64];
+            std::snprintf(p, sizeof(p), "build/rt-%llx.ppm", static_cast<unsigned long long>(kv.first));
             dump_rt_locked(kv.second, p);
         }
     }
@@ -14087,13 +14185,17 @@ void take_target_pixels(DevBuffer& staging, TargetPixels& t) {
     vkFreeMemory(g.device, staging.memory, nullptr);
 }
 
-// No Vulkan and no renderer state: safe off the renderer's lock.
-bool write_target_ppm(const TargetPixels& t) {
+// No Vulkan and no renderer state: safe off the renderer's lock. PNG when
+// the path ends in ".png", PPM otherwise (core/image_file.h).
+bool write_target_image(const TargetPixels& t) {
     const VkFormat fmt = t.format;
     const bool bgra = fmt == VK_FORMAT_B8G8R8A8_UNORM || fmt == VK_FORMAT_B8G8R8A8_SRGB;
     const bool rgba8 = bgra || fmt == VK_FORMAT_R8G8B8A8_UNORM || fmt == VK_FORMAT_R8G8B8A8_SRGB;
-    FILE* f = std::fopen(t.path.c_str(), "wb");
-    if (!f) return false;
+    ImageFile f;
+    if (!f.open(t.path, t.width, t.height)) {
+        host_log("render: cannot write %s", t.path.c_str());
+        return false;
+    }
     // Float targets: what the 8-bit image clamps away - each channel's largest
     // finite value and how many texels are infinite or NaN.
     float fmax[3] = {0.f, 0.f, 0.f};
@@ -14103,7 +14205,6 @@ bool write_target_ppm(const TargetPixels& t) {
         else if (std::isinf(v)) ++finf[k];
         else fmax[k] = std::max(fmax[k], v);
     };
-    std::fprintf(f, "P6\n%u %u\n255\n", t.width, t.height);
     std::vector<std::uint8_t> row(static_cast<std::size_t>(t.width) * 3);
     for (std::uint32_t y = 0; y < t.height; ++y) {
         for (std::uint32_t x = 0; x < t.width; ++x) {
@@ -14139,9 +14240,12 @@ bool write_target_ppm(const TargetPixels& t) {
                 row[x * 3 + 0] = row[x * 3 + 1] = row[x * 3 + 2] = p[0];
             }
         }
-        std::fwrite(row.data(), 1, row.size(), f);
+        f.row(row.data());
     }
-    std::fclose(f);
+    if (!f.close()) {
+        host_log("render: writing %s failed", t.path.c_str());
+        return false;
+    }
     host_log("render: wrote %s (%ux%u, format %d)", t.path.c_str(), t.width, t.height, fmt);
     if (fmt == VK_FORMAT_R16G16B16A16_SFLOAT || fmt == VK_FORMAT_B10G11R11_UFLOAT_PACK32) {
         host_log("render: %s float channels: max %g %g %g, infinite %llu %llu %llu, NaN %llu %llu %llu", t.path.c_str(), fmax[0], fmax[1],
@@ -14161,7 +14265,7 @@ bool gpu::dump_rt_locked(RtImage& r, const char* path) {
     if (!record_target_readback(r, staging, t)) return false;
     flush_locked();
     take_target_pixels(staging, t);
-    return write_target_ppm(t);
+    return write_target_image(t);
 }
 
 namespace gpu {

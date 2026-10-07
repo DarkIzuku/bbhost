@@ -54,6 +54,7 @@ add_executable(bbhost
   src/engine/image_text.cpp
   src/core/sha256.cpp
   src/core/sfo.cpp
+  src/core/image_file.cpp
   src/engine/guest.cpp
   src/engine/patch_manifest.cpp
   src/engine/gx_resources.cpp
@@ -336,6 +337,10 @@ if(UNIX)
   target_include_directories(debug_font_test PRIVATE plugins/debug_menu)
   target_compile_definitions(debug_font_test PRIVATE BB_FONT14_PATH="${CMAKE_SOURCE_DIR}/plugins/debug_menu/font14.bin")
   add_test(NAME debug_font_test COMMAND debug_font_test)
+  add_executable(image_file_test tests/image_file_test.cpp src/core/image_file.cpp)
+  target_include_directories(image_file_test PRIVATE src)
+  target_link_libraries(image_file_test PRIVATE ZLIB::ZLIB)
+  add_test(NAME image_file_test COMMAND image_file_test)
   add_executable(config_test tests/config_test.cpp src/core/config.cpp src/core/sfo.cpp)
   target_include_directories(config_test PRIVATE src ${CMAKE_BINARY_DIR}/gen)
   add_dependencies(config_test bbhost_version)

@@ -68,10 +68,9 @@ menu). F9 opens the plugin menu and F10 bbhost's own settings.
 
 ## Logs
 
-bbhost logs to standard error. On Windows, run it from a console to keep the
-log (`bbhost.exe 2> bbhost.log`); the Linux package's `run-bbhost.sh` writes
-each session's log to `logs/`. A bug report is most useful with that log
-attached.
+bbhost logs to standard error. The packages' `run-bbhost.bat` (Windows) and
+`run-bbhost.sh` (Linux) write each session's log to `logs/`. A bug report is
+most useful with that log attached.
 
 ## Troubleshooting
 
@@ -85,6 +84,18 @@ markers enabled, so the log of a second hang names the draw that hung - send
 that log. Overlays that hook Vulkan are a common cause: OBS's game capture is
 kept out automatically on AMD cards (`[video] obs_capture` changes that), and
 OBS's Window Capture records bbhost without any hook.
+
+**Wrong picture.** Wrong colours, a green or black screen, missing parts:
+press F12 in the game while it shows. bbhost writes that frame, every render
+target the last draws wrote and the draw list into a folder of its own beside
+the logs, `logs/f12-<date>-<time>/` (`build/` when there is no `logs/`
+folder, `BBHOST_CAPTURE_DIR` to choose), and the log names the folder. Zip it
+and send it with the log; `tools/f12_check.py <folder> <log>` checks it for
+the rendering bugs found so far. The images are PPM, which costs nothing to
+write; `BBHOST_F12_PNG=1` writes PNG instead, which any image viewer opens, a
+fifth of the size on disk, written over a few seconds in the background.
+`BBHOST_F12_TEXTURES=1` adds every texture the frame sampled, and the game
+pauses while it writes them.
 
 **Black or broken image in the world.** On cards with little video memory,
 check the log for `video memory is full`. bbhost sizes its own buffers to the
