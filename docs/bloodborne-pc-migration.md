@@ -109,10 +109,45 @@ online, temporal quality or loading-screen correctness.
 The user-supplied CUSA03173 dump reports `APP_VER=01.09`. Its clear SELF
 extracts to SHA-256
 `cec1b276e7f9e4db978e57f524f41fbaac594530a3437b002e23f3fab14b4f86`,
-not upstream's ELF hash; non-loadable program header 9 is absent. This is a
-compatibility question to verify before enabling address-dependent hooks;
-never solve it by enabling `BBHOST_ANY_EBOOT` in a user build.
+not upstream's ELF hash; non-loadable program header 9 is absent. This exact
+complete ELF identity is accepted alongside upstream's exact identity. All
+24 expected byte sites in the shipped patches agree with this image, and a
+Windows launch completed eight flips with exit 0 on an RTX 5070. This is an
+initial boot check, not gameplay/visual parity certification. Per-site patch
+checks remain active; unknown hashes are rejected. The launcher removes
+`BBHOST_ANY_EBOOT` from its child's environment.
 
 Pending renderer work is intentionally not advertised as available by the
 first launcher build. Hardware availability requires Vulkan feature queries
 and a successful provider initialization, not merely a GPU name or DLL file.
+
+### Completed baseline and initial frontend
+
+- Baseline `6b40d1ed3ff6487659c12f155c602d380d50a9b7`: upstream runtime
+  architecture at `fa904a4f9cab3753f2ec7d258cd8d271b99f6166`, with only CI
+  and the installed-MinGW-header discovery correction. Windows ABI tests
+  passed under Wine, Linux tests passed. Windows run:
+  https://github.com/DarkIzuku/bbhost/actions/runs/37658227224.
+- Native preparation/settings integration `30b06dd`: Windows build and tests
+  passed in run 37660727621; Linux passed in run 37660727655. The user's
+  original clear SELF was prepared into a separate data cache and booted
+  without bypassing the hash gate.
+- WPF reuses the original theme/background/logo/icons and obtains choices
+  from `host_options_describe`; it edits native TOML in place, retains account,
+  keybinding and unknown settings, and refuses a stale settings snapshot.
+- A directly supervised runtime drains both output streams into timestamped
+  logs (ten retained), hides the launcher on successful process creation,
+  and restores it on normal exit or crash. No cmd process is launched.
+- The basic setup frontend is excluded from Windows compilation. ImGui is
+  retained for native in-game PC/plugin menus. Linux keeps upstream setup.
+- Online starts offline, with custom server profiles. Hunter's Dream presets
+  and Discord linking are removed from this frontend; native F10 no longer
+  offers Discord. Creating accounts is delegated to the configured server
+  web page; no web URL is assumed. The native recovery flow remains available
+  only for a compatible bbhost account service.
+- Windows CI publishes a self-contained WPF launcher, tests its real window
+  and crash supervision against a fake child, and combines it with runtime,
+  patches/plugins, assets, diagnostics and exact toolchain metadata.
+
+The first boot does not verify original loading icons/fades, gameplay,
+multiplayer, high-refresh pacing or temporal quality. Those gates remain open.
