@@ -12,6 +12,7 @@
 #include "hle/modules.h"
 #include "host/gpu.h"
 #include "host/options.h"
+#include "host/settings.h"
 #include "log.h"
 
 #include <algorithm>
