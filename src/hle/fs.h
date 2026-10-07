@@ -29,6 +29,9 @@ std::string hle_fs_map_path(const char* guest);
 // The game files most recently found missing or empty, newest last ("" for
 // none): what a panic in the game's file loader most likely stopped on.
 std::string hle_fs_problem_files();
+// The last 16 files the game opened, with their sizes or errors, into the log
+// (once): every crash report ends with them.
+void hle_fs_log_recent_opens();
 // The same without the plugins' overlays: the file a plugin starts from (the
 // player's mods, the generated files, the dump), never its own output.
 std::string hle_fs_map_path_base(const char* guest);

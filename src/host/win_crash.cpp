@@ -4,6 +4,7 @@
 
 #include "core/portable.h"
 #include "engine/sf_heap_probe.h"
+#include "hle/fs.h"
 #include "hle/modules.h"
 #include "log.h"
 
@@ -171,6 +172,7 @@ void report(EXCEPTION_POINTERS* ep) {
         }
     }
     sf_heap_probe_crash_report();
+    hle_fs_log_recent_opens();
     hle_gnm_dump_recent_writes(0, 48);
 }
 
@@ -201,6 +203,7 @@ LONG WINAPI crash_filter(EXCEPTION_POINTERS* ep) {
     // faults (every thrown exception passes it first), so the report of
     // where it was thrown is made here.
     if (!reportable(code) && t_reporting++ == 0) report(ep);
+    hle_fs_log_recent_opens();
     host_log("crash: unhandled exception 0x%lx%s at 0x%llx; exiting 139", static_cast<unsigned long>(code),
              code == 0x20474343 ? " (a C++ exception nothing caught)" : "", static_cast<unsigned long long>(ep->ContextRecord->Rip));
     std::fflush(nullptr);
@@ -225,6 +228,7 @@ void log_own_stack() {
 [[noreturn]] void end_after(const char* what) {
     host_log("crash: %s (thread %lu)", what, static_cast<unsigned long>(GetCurrentThreadId()));
     log_own_stack();
+    hle_fs_log_recent_opens();
     std::fflush(nullptr);
     TerminateProcess(GetCurrentProcess(), 134);  // not _exit: it goes through ExitProcess, which hung here under wine
     _exit(134);

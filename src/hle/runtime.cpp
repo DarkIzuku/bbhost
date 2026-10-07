@@ -130,6 +130,7 @@ GUEST_ABI void hle_dl_panic(const char* file, int line, const char* msg, std::ui
         panic_backtrace(rsp, rbp);
         if (const std::string files = hle_fs_problem_files(); !files.empty())
             host_log("DL_PANIC: game files found missing or empty, newest last: %s", files.c_str());
+        hle_fs_log_recent_opens();
         if (file && std::strstr(file, "FileTransferTask"))
             host_log("DL_PANIC: the game's file loader stopped on a file it could not read: a game file is missing or "
                      "empty. The 1.09 update's files must be copied over the game folder (its sce_sys/param.sfo then "

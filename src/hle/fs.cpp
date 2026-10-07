@@ -815,7 +815,27 @@ void note_problem(const char* guest, const std::string& host, const char* what) 
     if (g_problems.size() > 8) g_problems.erase(g_problems.begin());
 }
 
-int log_open(const char* path, const std::string& host, int flags, int result) {
+// The last opens, for crash reports (hle_fs_log_recent_opens): fixed slots,
+// written without a lock and read at a crash without one - a torn line in a
+// report beats a deadlock in it.
+constexpr unsigned kRecentOpens = 16;
+char g_recent[kRecentOpens][240];
+std::atomic<unsigned> g_recent_next{0};
+
+void note_open(const char* guest, int result, long long size) {
+    const unsigned i = g_recent_next.fetch_add(1) % kRecentOpens;
+    if (result < 0) {
+        std::snprintf(g_recent[i], sizeof(g_recent[i]), "%s -> error 0x%08x", guest ? guest : "?",
+                      static_cast<unsigned>(result));
+    } else if (size >= 0) {
+        std::snprintf(g_recent[i], sizeof(g_recent[i]), "%s -> %lld bytes", guest ? guest : "?", size);
+    } else {
+        std::snprintf(g_recent[i], sizeof(g_recent[i]), "%s -> opened", guest ? guest : "?");
+    }
+}
+
+int log_open(const char* path, const std::string& host, int flags, int result, long long size = -1) {
+    note_open(path, result, size);
     static int logs;
     if (logs < 24 || fs_trace()) {
         host_log("sceKernelOpen %s -> %s flags=0x%x -> %d", path ? path : "", host.c_str(), flags,
@@ -868,10 +888,11 @@ GUEST_ABI int hle_kernel_open(const char* path, int flags, int mode) {
         // No file of a PS4 game is empty: a dump with one is incomplete.
         if (st_ok == 0 && st.st_size == 0) note_problem(path, host, "is empty (0 bytes)");
     }
+    const long long size = st_ok == 0 && !is_dir ? static_cast<long long>(st.st_size) : -1;
     std::lock_guard<std::mutex> lock(g_fs_mu);
     int id = g_fd_next++;
     g_files[id] = std::move(hf);
-    return log_open(path, host, flags, id);
+    return log_open(path, host, flags, id, size);
 }
 
 HostFile* file_get(int fd) {
@@ -1260,6 +1281,14 @@ void hle_fs_umount(const char* guest_prefix_str) {
             return;
         }
     }
+}
+
+void hle_fs_log_recent_opens() {
+    static std::atomic<bool> done{false};
+    const unsigned n = g_recent_next.load();
+    if (!n || done.exchange(true)) return;
+    host_log("files opened last, oldest first:");
+    for (unsigned k = n > kRecentOpens ? n - kRecentOpens : 0; k < n; ++k) host_log("  %s", g_recent[k % kRecentOpens]);
 }
 
 std::string hle_fs_problem_files() {
