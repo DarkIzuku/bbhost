@@ -1,0 +1,136 @@
+<Window x:Class="BloodborneLauncher.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework" Title="Bloodborne PC" Width="1500" Height="920" MinWidth="1000" MinHeight="680" WindowStartupLocation="CenterScreen" WindowStyle="None" ResizeMode="CanResize" FontFamily="Segoe UI" FontSize="13" Icon="Assets/bloodborne.ico" Background="#090B0C" Foreground="{StaticResource TextBrush}" UseLayoutRounding="True" SnapsToDevicePixels="True">
+    <shell:WindowChrome.WindowChrome>
+        <shell:WindowChrome CaptionHeight="0" ResizeBorderThickness="6" CornerRadius="0" GlassFrameThickness="0" UseAeroCaptionButtons="False" />
+    </shell:WindowChrome.WindowChrome>
+    <Window.Resources>
+        <Style x:Key="StatusLabel" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+            <Setter Property="FontFamily" Value="Georgia" />
+            <Setter Property="FontSize" Value="14" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+        <Style x:Key="StatusValue" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+            <Setter Property="ToolTip" Value="{Binding Text, RelativeSource={RelativeSource Self}}" />
+        </Style>
+        <Style x:Key="QuickCard" TargetType="Border" BasedOn="{StaticResource CardStyle}">
+            <Setter Property="Padding" Value="12" />
+            <Setter Property="Margin" Value="0,0,10,0" />
+            <Setter Property="Background" Value="#B90D1011" />
+        </Style>
+    </Window.Resources>
+    <Border BorderBrush="#76624B" BorderThickness="1">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="56" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="54" />
+            </Grid.RowDefinitions>
+            <Border BorderBrush="#68422F" BorderThickness="0,0,0,1" Background="#0C0E0F">
+                <Grid MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="15,0">
+                        <Border BorderBrush="#885443" BorderThickness="1" Padding="2" Margin="0,0,14,0">
+                            <Image Source="Assets/bloodborne-icon.png" Width="38" Height="38" RenderOptions.BitmapScalingMode="HighQuality" />
+                        </Border>
+                        <TextBlock Text="Bloodborne" FontFamily="Georgia" FontSize="24" VerticalAlignment="Center" />
+                        <TextBlock Text=" PC" FontFamily="Georgia" FontSize="18" Foreground="#BCAE99" VerticalAlignment="Center" Margin="3,3,0,0" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="0,0,8,0">
+                        <Button Content="" Style="{StaticResource CaptionButton}" AutomationProperties.Name="Minimize" ToolTip="Minimize" Click="Minimize_Click" />
+                        <Button x:Name="MaximizeButton" Content="" Style="{StaticResource CaptionButton}" AutomationProperties.Name="Maximize or restore" ToolTip="Maximize or restore" Click="Maximize_Click" />
+                        <Button Content="" Style="{StaticResource CaptionButton}" BorderBrush="#763A30" AutomationProperties.Name="Close" ToolTip="Close" Click="Close_Click" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+<Grid Grid.Row="1"><Grid.ColumnDefinitions><ColumnDefinition Width="218"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+ <Border Background="#0C0E0F" BorderBrush="#4C4234" BorderThickness="0,0,1,0"><DockPanel>
+  <StackPanel DockPanel.Dock="Bottom" Margin="20"><Path Data="M50,0 L50,124 M50,13 L33,37 24,78 43,57 50,46 57,57 76,78 67,37 Z" Stroke="#776451" StrokeThickness="1.2" Height="110" Stretch="Uniform" Opacity=".32"/><TextBlock Text="BLOODBORNE PC" FontFamily="Georgia" HorizontalAlignment="Center" Foreground="#C3AF93" Margin="0,12,0,0"/></StackPanel>
+  <ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="Navigation" Margin="0,20,0,0"><Button Style="{StaticResource NavButton}" CommandParameter="Home" Click="Nav_Click" Content="JUGAR" Tag="active"/>
+<Button Style="{StaticResource NavButton}" CommandParameter="Game" Click="Nav_Click" Content="JUEGO" Tag=""/>
+<Button Style="{StaticResource NavButton}" CommandParameter="Display" Click="Nav_Click" Content="PANTALLA" Tag=""/>
+<Button Style="{StaticResource NavButton}" CommandParameter="Graphics" Click="Nav_Click" Content="GRÁFICOS" Tag=""/>
+<Button Style="{StaticResource NavButton}" CommandParameter="Upscaling" Click="Nav_Click" Content="UPSCALING" Tag=""/>
+<Button Style="{StaticResource NavButton}" CommandParameter="Controls" Click="Nav_Click" Content="CONTROLES" Tag=""/>
+<Button Style="{StaticResource NavButton}" CommandParameter="Online" Click="Nav_Click" Content="ONLINE" Tag=""/>
+<Button Style="{StaticResource NavButton}" CommandParameter="Mods" Click="Nav_Click" Content="MODS Y PLUGINS" Tag=""/>
+<Button Style="{StaticResource NavButton}" CommandParameter="Logs" Click="Nav_Click" Content="DIAGNÓSTICO" Tag=""/>
+</StackPanel></ScrollViewer>
+ </DockPanel></Border>
+ <Grid Grid.Column="1" ClipToBounds="True"><Image x:Name="HeroImage" Source="Assets/hunter-background.png" Stretch="UniformToFill" IsHitTestVisible="False"/><Rectangle IsHitTestVisible="False"><Rectangle.Fill><LinearGradientBrush StartPoint="0,0" EndPoint="1,0"><GradientStop Color="#D6080A0B" Offset="0"/><GradientStop Color="#18080A0B" Offset="1"/></LinearGradientBrush></Rectangle.Fill></Rectangle>
+ <ScrollViewer x:Name="HomePage" VerticalScrollBarVisibility="Auto"><StackPanel Margin="28,20" MaxWidth="1050" HorizontalAlignment="Stretch">
+  <Border Height="122" Width="520" HorizontalAlignment="Left"><Border.Background><ImageBrush ImageSource="Assets/bloodborne-logo.png" Viewbox="0,0.06,1,0.76" Stretch="Uniform" AlignmentX="Left"/></Border.Background></Border>
+  <ContentControl Style="{StaticResource OrnatePanel}" MaxWidth="570" HorizontalAlignment="Left" Margin="0,22,0,0"><StackPanel><TextBlock Text="TU VIAJE COMIENZA EN YHARNAM" Style="{StaticResource SectionTitle}"/><TextBlock x:Name="GameVersionStatus" Text="Selecciona Bloodborne 1.09" FontFamily="Georgia" FontSize="18"/><TextBlock x:Name="GamePathStatus" Text="Sin instalación seleccionada" TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="0,8,0,0"/><Button Content="Seleccionar carpeta de Bloodborne" Click="BrowseGame_Click" Margin="0,14,0,14" HorizontalAlignment="Left"/><TextBlock x:Name="GpuStatus" Text="Consultando GPU..."/><TextBlock x:Name="RuntimeStatus" Text="Consultando bbhost..." Margin="0,8,0,0"/></StackPanel></ContentControl>
+  <Button x:Name="PlayButton" Style="{StaticResource PlayButton}" Content="JUGAR BLOODBORNE" Click="Play_Click" MaxWidth="550" HorizontalAlignment="Left" Margin="14,20,14,0" IsEnabled="False"/>
+  <TextBlock x:Name="PlayHint" TextWrapping="Wrap" MaxWidth="550" HorizontalAlignment="Left" Foreground="{StaticResource MutedBrush}" Margin="18,12,0,24"/>
+  <UniformGrid x:Name="QuickSettingsGrid" Columns="4" Margin="0,14,0,0"><Border Style="{StaticResource QuickCard}"><StackPanel><TextBlock Text="Resolución" FontFamily="Georgia"/><ComboBox x:Name="QuickResolution" Tag="resolution" Margin="0,10,0,0" SelectionChanged="QuickSetting_Changed"/></StackPanel></Border><Border Style="{StaticResource QuickCard}"><StackPanel><TextBlock Text="Ventana" FontFamily="Georgia"/><ComboBox x:Name="QuickDisplay" Tag="window_mode" Margin="0,10,0,0" SelectionChanged="QuickSetting_Changed"/></StackPanel></Border><Border Style="{StaticResource QuickCard}"><StackPanel><TextBlock Text="Upscaling" FontFamily="Georgia"/><ComboBox x:Name="QuickUpscaler" Tag="upscaler" Margin="0,10,0,0" SelectionChanged="QuickSetting_Changed"/></StackPanel></Border><Border Style="{StaticResource QuickCard}"><StackPanel><TextBlock Text="Frame cap" FontFamily="Georgia"/><ComboBox x:Name="QuickFps" Tag="frame_cap" Margin="0,10,0,0" SelectionChanged="QuickSetting_Changed"/></StackPanel></Border></UniformGrid>
+ </StackPanel></ScrollViewer>
+ <Border x:Name="SettingsScrim" Background="#E6090C0E" Visibility="Collapsed" IsHitTestVisible="False"/>
+ <Grid x:Name="SettingsHost">
+<ScrollViewer x:Name="GamePage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"><StackPanel Margin="34,30" MaxWidth="1060">
+ <TextBlock Text="Juego" FontFamily="Georgia" FontSize="32" Margin="0,0,0,20"/>
+ <Border Style="{StaticResource CardStyle}"><StackPanel>
+  <TextBlock Text="BLOODBORNE 1.09" Style="{StaticResource SectionTitle}"/>
+  <DockPanel><Button DockPanel.Dock="Right" Content="Seleccionar carpeta" Click="BrowseGame_Click" Margin="10,0,0,0"/><TextBox x:Name="PathBox" IsReadOnly="True" AutomationProperties.Name="Carpeta de Bloodborne"/></DockPanel>
+  <TextBlock x:Name="InstallationDetail" TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="0,10,0,16"/>
+  <TextBlock Text="Idioma"/><ComboBox x:Name="LanguageCombo" Width="280" HorizontalAlignment="Left" Margin="0,6,0,16" SelectionChanged="Preference_Changed">
+   <ComboBoxItem Content="English" Tag="1"/><ComboBoxItem Content="Español" Tag="3"/><ComboBoxItem Content="Français" Tag="2"/><ComboBoxItem Content="Deutsch" Tag="4"/><ComboBoxItem Content="Italiano" Tag="5"/><ComboBoxItem Content="Русский" Tag="8"/><ComboBoxItem Content="日本語" Tag="0"/>
+  </ComboBox>
+  <TextBlock Text="Carpeta de datos"/><DockPanel Margin="0,6,0,12"><Button DockPanel.Dock="Right" Content="Cambiar" Click="BrowseData_Click" Margin="10,0,0,0"/><TextBox x:Name="DataBox" IsReadOnly="True"/></DockPanel>
+  <TextBlock Text="Partidas guardadas"/><TextBlock x:Name="SavesPath" TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="0,6,0,10"/>
+  <WrapPanel><Button Content="Abrir saves" Click="OpenSaves_Click" Margin="0,0,8,8"/><Button Content="Abrir backups" Click="OpenBackups_Click" Margin="0,0,8,8"/><Button Content="Crear backup" Click="Backup_Click" Margin="0,0,8,8"/><Button Content="Importar save antiguo" Click="ImportSave_Click" Margin="0,0,8,8"/></WrapPanel>
+  <TextBlock Text="bbhost conserva sus backups automáticos. La importación se detiene si ya existe una partida." TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}"/>
+ </StackPanel></Border>
+ <CheckBox x:Name="QuickReentry" Content="Quick reentry: finalizar loading cuando el área está lista" Margin="0,18,0,6" Checked="Preference_Changed" Unchecked="Preference_Changed"/>
+ <CheckBox x:Name="AllPostProcessors" Content="Usar tres post-processors de streaming durante gameplay" Checked="Preference_Changed" Unchecked="Preference_Changed"/>
+ <StackPanel x:Name="GameOptions" Margin="0,18,0,0"/>
+</StackPanel></ScrollViewer>
+<ScrollViewer x:Name="DisplayPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"><StackPanel Margin="34,30" MaxWidth="1060"><TextBlock Text="Pantalla" FontFamily="Georgia" FontSize="32" Margin="0,0,0,20"/><TextBlock Text="Fullscreen usa la resolución y frecuencia del escritorio. Las opciones de resolución controlan el render del juego; GX ajusta el HUD para ultrawide." TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,18"/><StackPanel x:Name="DisplayOptions"/></StackPanel></ScrollViewer>
+<ScrollViewer x:Name="GraphicsPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"><StackPanel Margin="34,30" MaxWidth="1060"><TextBlock Text="Gráficos y efectos" FontFamily="Georgia" FontSize="32" Margin="0,0,0,20"/><StackPanel x:Name="GraphicsOptions"/></StackPanel></ScrollViewer>
+<ScrollViewer x:Name="UpscalingPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"><StackPanel Margin="34,30" MaxWidth="1060"><TextBlock Text="Upscaling" FontFamily="Georgia" FontSize="32" Margin="0,0,0,20"/><StackPanel x:Name="UpscalingOptions"/><Border Style="{StaticResource CardStyle}" Margin="0,18,0,0"><StackPanel><TextBlock Text="PRÓXIMAS INTEGRACIONES" Style="{StaticResource SectionTitle}"/><TextBlock Text="FSR 3.1 · DLSS / DLAA · FSR 4 · FSR 4.1.1 · TAA" TextWrapping="Wrap"/><TextBlock Text="Todavía no disponibles en esta build. Se habilitarán tras integrar y validar sus backends, sus datos temporales y las capacidades de Vulkan." TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="0,8,0,0"/></StackPanel></Border></StackPanel></ScrollViewer>
+<ScrollViewer x:Name="ControlsPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"><StackPanel Margin="34,30" MaxWidth="1060"><TextBlock Text="Controles" FontFamily="Georgia" FontSize="32" Margin="0,0,0,20"/><TextBlock Text="Las teclas se pueden reasignar desde PC Controls y Key Bindings dentro del juego." TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,18"/><StackPanel x:Name="ControlsOptions"/></StackPanel></ScrollViewer>
+<ScrollViewer x:Name="OnlinePage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"><StackPanel Margin="34,30" MaxWidth="1060"><TextBlock Text="Online" FontFamily="Georgia" FontSize="32" Margin="0,0,0,20"/><Border Style="{StaticResource CardStyle}"><StackPanel>
+ <TextBlock Text="SERVIDOR" Style="{StaticResource SectionTitle}"/><ComboBox x:Name="ServerCombo" Width="320" HorizontalAlignment="Left"><ComboBoxItem Content="Offline"/><ComboBoxItem Content="Custom Server"/></ComboBox>
+ <TextBlock Text="Servidor personalizado (URL)" Margin="0,16,0,6"/><TextBox x:Name="CustomServerBox" Text="https://server.example.com"/>
+ <TextBlock Text="Puerto P2P (UDP)" Margin="0,16,0,6"/><TextBox x:Name="P2pPortBox" Text="9307" Width="150" HorizontalAlignment="Left"/>
+ <Button Content="Aplicar servidor" Click="ApplyServer_Click" HorizontalAlignment="Left" Margin="0,16,0,0"/>
+ <TextBlock x:Name="AccountStatus" TextWrapping="Wrap" Margin="0,18,0,10"/>
+ <TextBlock Text="Página de cuentas del servidor" Margin="0,12,0,6"/><TextBox x:Name="AccountPageBox" TextChanged="AccountPage_Changed"/>
+ <Button Content="Abrir página / crear cuenta" Click="AccountPage_Click" HorizontalAlignment="Left" Margin="0,8,0,16"/>
+ <TextBlock Text="Acceso de bbhost por nombre y código (servidores compatibles)" TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}"/>
+ <TextBox x:Name="AccountNameBox" AutomationProperties.Name="Nombre de cuenta" Margin="0,8,0,8"/>
+ <PasswordBox x:Name="RecoveryCodeBox" AutomationProperties.Name="Código de recuperación" Margin="0,0,0,8"/>
+ <WrapPanel><Button Content="Acceder / recuperar cuenta" Click="RecoverAccount_Click" Margin="0,0,8,8"/><Button Content="Cerrar sesión" Click="SignOut_Click" Margin="0,0,8,8"/><Button Content="Copiar código mostrado" Click="CopyAccountCode_Click" Margin="0,0,8,8"/></WrapPanel>
+ <TextBlock Text="Cada servidor usa su propio perfil y cuenta. Los tokens permanecen en la configuración de bbhost." TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}"/>
+ <TextBlock x:Name="AccountDetail" TextWrapping="Wrap" Margin="0,12,0,0"/>
+ <TextBlock Text="shadNet: integración pendiente del adaptador de protocolo. Su WebAPI actual no implementa el servicio de cuentas y matchmaking de bbhost." TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="0,16,0,0"/>
+</StackPanel></Border></StackPanel></ScrollViewer>
+<ScrollViewer x:Name="ModsPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"><StackPanel Margin="34,30" MaxWidth="1060"><TextBlock Text="Mods, plugins y patches" FontFamily="Georgia" FontSize="32" Margin="0,0,0,20"/><Border Style="{StaticResource CardStyle}"><StackPanel><TextBlock x:Name="ModsFolderText" TextWrapping="Wrap"/><WrapPanel Margin="0,12,0,0"><Button Content="Abrir mods" Click="OpenMods_Click" Margin="0,0,8,8"/><Button Content="Abrir plugins" Click="OpenPlugins_Click" Margin="0,0,8,8"/></WrapPanel><TextBlock Text="F9 abre las opciones de los plugins dentro del juego. bbhost sigue verificando las firmas y aplicando los patches." TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}"/></StackPanel></Border><StackPanel x:Name="PluginOptions" Margin="0,18,0,0"/><StackPanel x:Name="PatchOptions" Margin="0,18,0,0"/></StackPanel></ScrollViewer>
+<ScrollViewer x:Name="LogsPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"><StackPanel Margin="34,30" MaxWidth="1060"><TextBlock Text="Diagnóstico" FontFamily="Georgia" FontSize="32" Margin="0,0,0,20"/><Border Style="{StaticResource CardStyle}"><StackPanel><CheckBox x:Name="DetailedLogsCheck" Content="Detailed Logs" Checked="Preference_Changed" Unchecked="Preference_Changed"/><CheckBox x:Name="DeveloperConsoleCheck" Content="Consola de desarrollo" Checked="Preference_Changed" Unchecked="Preference_Changed"/><TextBlock Text="Cada sesión guarda automáticamente un log con el diagnóstico completo de bbhost. Se conservan diez sesiones recientes. Detailed Logs añade tiempos de GPU y estadísticas de audio." TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="0,12,0,16"/><Button Content="Abrir carpeta de logs" Click="OpenLogs_Click" HorizontalAlignment="Left"/><Button Content="Recargar opciones de bbhost" Click="Reload_Click" HorizontalAlignment="Left" Margin="0,12,0,0"/><TextBlock x:Name="BuildStatus" TextWrapping="Wrap" Margin="0,18,0,0"/></StackPanel></Border></StackPanel></ScrollViewer>
+</Grid>
+ </Grid></Grid>
+            <Border Grid.Row="2" BorderBrush="#4C4234" BorderThickness="0,1,0,0" Background="#0C0E0F">
+                <Grid Margin="20,0,16,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" ClipToBounds="True">
+                        <TextBlock Text="●" Foreground="#B58561" FontSize="9" VerticalAlignment="Center" Margin="0,0,8,0" />
+                        <TextBlock Text="WINDOWS · x64" FontSize="10" Foreground="#AC9C87" VerticalAlignment="Center" />
+                        <TextBlock x:Name="FooterGpu" Text="   |   GPU detecting..." Foreground="#9F978B" FontSize="11" MaxWidth="330" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                        <TextBlock x:Name="FooterFps" Text="   |   60 FPS" Foreground="#9F978B" FontSize="11" VerticalAlignment="Center" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock x:Name="FooterMessage" Text="" Foreground="#C5AD8D" FontSize="11" Margin="14,0" VerticalAlignment="Center" AutomationProperties.LiveSetting="Polite" />
+                        <Button x:Name="SaveButton" Content="Guardar opciones" Click="Save_Click" Padding="18,7" ToolTip="Save all launcher settings" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </Grid>
+    </Border>
+</Window>
