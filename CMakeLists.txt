@@ -109,6 +109,7 @@ add_executable(bbhost
   src/host/ingame_menu.cpp
   src/host/options.cpp
   src/host/launcher_bridge.cpp
+  src/host/launcher_gpu.cpp
   src/host/updater.cpp
   src/host/update_verify.cpp
   src/host/bindings.cpp
@@ -226,6 +227,7 @@ endif()
 
 find_package(Vulkan QUIET)
 if(Vulkan_FOUND)
+  target_compile_definitions(bbhost PRIVATE BBHOST_HAVE_VULKAN=1)
   # Draw capture manifests and raw-texel comparison.
   add_library(replay_common STATIC src/replay/json.cpp src/replay/compare.cpp)
   target_include_directories(replay_common PUBLIC src)
@@ -268,7 +270,10 @@ if(SDL3_FOUND AND Vulkan_FOUND)
   target_include_directories(imgui PUBLIC third_party/imgui)
   target_link_libraries(imgui PUBLIC SDL3::SDL3 Vulkan::Vulkan)
   target_compile_options(imgui PRIVATE -w)
-  target_sources(bbhost PRIVATE src/host/launcher.cpp src/host/plugin_ui.cpp)
+  target_sources(bbhost PRIVATE src/host/plugin_ui.cpp)
+  if(NOT WIN32)
+    target_sources(bbhost PRIVATE src/host/launcher.cpp)
+  endif()
   target_link_libraries(bbhost PRIVATE imgui)
   set_source_files_properties(src/host/window.cpp PROPERTIES COMPILE_OPTIONS "-Wno-missing-field-initializers")
   set_source_files_properties(src/host/overlay.cpp PROPERTIES COMPILE_OPTIONS "-Wno-missing-field-initializers")

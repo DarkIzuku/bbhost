@@ -139,8 +139,8 @@ GameInstallation game_prepare(const std::string& selected, const std::string& da
             r.eboot = path_text(source);
         } else {
             if (data.empty()) throw std::runtime_error("A writable data folder is required for game preparation.");
-            const fs::path cache = fs::weakly_canonical(fs::u8path(data)) / "cache" / "game" /
-                                   sha256_hex(bytes.data(), bytes.size());
+            const fs::path cache = fs::weakly_canonical(fs::u8path(data) / "cache" / "game" /
+                                   sha256_hex(bytes.data(), bytes.size()));
             if (beneath(cache, app0)) throw std::runtime_error("Choose a data folder outside the original game dump.");
             const fs::path target = cache / "eboot.elf";
             bool valid_cache = false;

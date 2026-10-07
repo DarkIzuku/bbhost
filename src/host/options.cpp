@@ -283,7 +283,6 @@ const Row g_rows[] = {
     {Row::Header, "ACCOUNT"},
     {Row::Info, nullptr, -1, 0},
     {Row::Info, nullptr, -1, 1},
-    {Row::Action, "Link with Discord", -1, 0},
     {Row::Text, "Name", -1, 0},
     {Row::Action, "Create account on this PC", -1, 1},
     {Row::Text, "Recovery code", -1, 1},
@@ -426,6 +425,10 @@ bool action_idle(int which) {
 }
 
 void account_action(int which, const std::string& name, const std::string& code) {
+    if (which == 0) {
+        set_account_lines("Discord linking is disabled in Bloodborne PC", "Use the server's account page and recovery code");
+        return;
+    }
     if (which >= 10) {
         update_action(which);
         return;

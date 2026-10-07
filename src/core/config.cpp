@@ -719,21 +719,21 @@ std::string config_setup_help(const HostConfig& c) {
             line("bbhost: " + path + " does not say where the game is.");
         }
         line("");
-        line("Open it and set both paths, for example:");
+        line("Open BloodborneLauncher.exe and select the Bloodborne 1.09 folder.");
+        line("For a command-line run, set the game folder:");
         line("    [paths]");
         line("    app0  = \"C:\\Games\\Bloodborne\\CUSA00900\"   # the folder that contains dvdroot_ps4");
-        line("    eboot = \"C:\\Games\\Bloodborne\\eboot.bin\"    # the decrypted eboot ELF");
         line("");
         line("Either slash works on Windows, and a relative path is taken from the");
-        line("folder the configuration file is in. The same two can be given on the");
-        line("command line instead:  bbhost --app0 DIR path\\to\\eboot.bin");
+        line("folder the configuration file is in. The executable is found and prepared");
+        line("automatically from that folder. Command line: bbhost --app0 DIR");
         return out;
     }
     // Both are set: say which one is wrong, and where the value came from.
     const std::string from = c.config_path.empty() ? std::string("the command line") : c.config_path;
     if (!file_exists(c.eboot)) {
         line("bbhost: the eboot is not there: " + c.eboot);
-        line("Set paths.eboot in " + from + " to the decrypted eboot ELF.");
+        line("Reselect the game folder in BloodborneLauncher.exe to rebuild its cache.");
         return out;
     }
     if (!dir_exists(c.app0)) {
@@ -772,18 +772,13 @@ std::string config_eboot_help(const HostConfig& c, const std::string& sha256, co
     }
     line("");
     if (ver == "01.09") {
-        line("The game in app0 is 1.09, so the eboot is the file that is off: set paths.eboot");
-        line("in " + from + " to that game's eboot.bin, decrypted to an ELF.");
+        line("Reselect the game folder in BloodborneLauncher.exe to validate and rebuild the executable cache.");
     } else {
-        line("bbhost needs the eboot.bin of the game's 1.09 update (CUSA00900, APP_VER 01.09),");
-        line("decrypted to an ELF. A dump of the game without the update carries the 1.00 eboot.");
-        line("Copy the update's files over the game's in the app0 folder, so its");
-        line("sce_sys/param.sfo says APP_VER 01.09, and set paths.eboot in " + from);
-        line("to the update's decrypted eboot.bin.");
+        line("Select a complete Bloodborne 1.09 dump (APP_VER 01.09), including its original eboot.bin.");
+        line("A base-game dump without the update is unsupported.");
     }
     line("");
-    line("BBHOST_ANY_EBOOT=1 starts this eboot anyway, without any of bbhost's patches;");
-    line("a different version is expected to crash.");
+    line("An unknown executable is rejected; compatibility checks must not be bypassed.");
     return out;
 }
 
@@ -814,7 +809,7 @@ bool config_write_template(const std::string& path) {
     if (!out) {
         return false;
     }
-    out << "# bbhost configuration. Set the two paths under [paths], then run bbhost.\n"
+    out << "# bbhost configuration. Select your game folder in BloodborneLauncher.exe.\n"
            "# On Windows write them either way: \"C:\\Games\\Bloodborne\" or \"C:/Games/Bloodborne\".\n"
            "# A relative path is taken from the folder this file is in.\n"
            "# This file is the per-user one (%APPDATA%\\bbhost on Windows, ~/.config/bbhost on\n"
@@ -823,9 +818,8 @@ bool config_write_template(const std::string& path) {
            "# The folder that contains dvdroot_ps4 (the decrypted game dump).\n"
            "#   app0 = \"C:\\Games\\Bloodborne\\CUSA00900\"\n"
            "app0 = \"PATH-TO-THE-GAME-DUMP\"\n"
-           "# The decrypted eboot ELF. May also be given on the command line.\n"
-           "#   eboot = \"C:\\Games\\Bloodborne\\eboot.bin\"\n"
-           "eboot = \"PATH-TO-THE-EBOOT\"\n"
+           "# The executable is found automatically; an optional prepared path is internal.\n"
+           "eboot = \"\"\n"
            "# Writable folder for saves, caches and /data. Default: the per-user data\n"
            "# folder (%LOCALAPPDATA%\\bbhost\\data, ~/.local/share/bbhost/data), which\n"
            "# outlives any copy of bbhost.\n"

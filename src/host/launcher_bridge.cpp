@@ -1,4 +1,5 @@
 #include "host/launcher_bridge.h"
+#include "host/launcher_gpu.h"
 #include "core/config.h"
 #include "core/game_installation.h"
 #include "host/options.h"
@@ -30,6 +31,7 @@ bool launcher_bridge_command(int argc, char** argv, int* result) {
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--launcher-state") command = "state";
+        else if (arg == "--launcher-gpu") command = "gpu";
         else if (arg == "--prepare-game") {
             command = "prepare";
             if (i + 1 < argc) game = argv[++i];
@@ -41,6 +43,7 @@ bool launcher_bridge_command(int argc, char** argv, int* result) {
         else args.push_back(argv[i]);
     }
     if (command.empty()) return false;
+    if (command == "gpu") { std::puts(launcher_gpu_json().c_str()); *result = 0; return true; }
     HostConfig c;
     std::string err;
     if (!config_load(static_cast<int>(args.size()), args.data(), &c, &err)) {
@@ -56,12 +59,21 @@ bool launcher_bridge_command(int argc, char** argv, int* result) {
     }
     host_options_load();
     if (command == "account") {
-        int which = action == "link" ? 0 : action == "create" ? 1 : action == "recover" ? 2 : action == "website" ? 3 : action == "signout" ? 4 : -1;
+        int which = action == "create" ? 1 : action == "recover" ? 2 : action == "website" ? 3 : action == "signout" ? 4 : -1;
         if (which < 0) { std::puts("{\"ok\":false,\"error\":\"Unknown account action\"}"); *result = 2; return true; }
         host_account_action(which, name, code);
         // Existing account actions use a worker and open the browser themselves.
         // Do not log account tokens or put them in this machine-readable response.
-        while (host_account_busy()) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        std::string last_detail, last_outcome;
+        while (host_account_busy()) {
+            const std::string detail = host_account_detail(), outcome = host_account_outcome();
+            if (detail != last_detail || outcome != last_outcome) {
+                std::printf("{\"ok\":true,\"account\":%s,\"outcome\":%s,\"detail\":%s}\n",
+                            quote(host_account_signed_in()).c_str(), quote(outcome).c_str(), quote(detail).c_str());
+                std::fflush(stdout); last_detail = detail; last_outcome = outcome;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
         if (host_account_take_save()) host_options_save_now();
         std::printf("{\"ok\":true,\"account\":%s,\"outcome\":%s,\"detail\":%s}\n",
                     quote(host_account_signed_in()).c_str(), quote(host_account_outcome()).c_str(), quote(host_account_detail()).c_str());

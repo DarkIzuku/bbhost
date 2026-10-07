@@ -797,6 +797,24 @@ int main(int argc, char** argv) {
     int bridge_result = 0;
     if (launcher_bridge_command(argc, argv, &bridge_result)) return bridge_result;
 #if defined(_WIN32)
+    // A double-click or --setup opens the only Windows frontend. The WPF
+    // supervisor marks its child so a broken installation cannot reopen an
+    // alternate setup window or recursively spawn another launcher.
+    bool setup = argc == 1;
+    for (int i = 1; i < argc; ++i) if (std::strcmp(argv[i], "--setup") == 0) setup = true;
+    if (setup && !std::getenv("BBHOST_WPF_CHILD") && !std::getenv("BBHOST_HEADLESS")) {
+        wchar_t module[32768]{};
+        const DWORD n = GetModuleFileNameW(nullptr, module, 32768);
+        std::wstring frontend(module, n);
+        frontend = frontend.substr(0, frontend.find_last_of(L"/\\") + 1) + L"BloodborneLauncher.exe";
+        STARTUPINFOW si{}; si.cb = sizeof(si);
+        PROCESS_INFORMATION pi{};
+        if (CreateProcessW(frontend.c_str(), nullptr, nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+            CloseHandle(pi.hThread); CloseHandle(pi.hProcess); return 0;
+        }
+        host_log("BloodborneLauncher.exe is missing. Extract the complete Windows package.");
+        return 2;
+    }
     hle_kernel_reserve_guest_windows();  // before anything else can take those addresses
     write_watch_install();               // the vectored handler for write-protected texture memory
     win_crash_install();                 // the crash report, behind it
@@ -855,7 +873,7 @@ int main(int argc, char** argv) {
             host_log("game: %s", prepared.error.c_str());
         }
     }
-#if defined(BBHOST_HAVE_SDL3)
+#if defined(BBHOST_HAVE_SDL3) && !defined(_WIN32)
     {
         // The setup window (host/launcher.h): when the game's paths are
         // missing or wrong, when asked for (--setup), or at every start
