@@ -136,6 +136,7 @@ void run_mode(Device& d, DlssProvider& provider, UpscaleExtent render, UpscaleEx
 }
 }
 int main(int argc, char** argv) {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     if (argc != 3) { std::fprintf(stderr, "Usage: dlss_probe MODEL_DIRECTORY WRITABLE_CACHE_DIRECTORY\nUses synthetic frames only. Does not enable in-game DLSS.\n"); return 2; }
     try {
         Device d;

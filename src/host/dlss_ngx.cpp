@@ -93,24 +93,36 @@ struct Core {
 #ifdef _WIN32
         wchar_t path[32768]{}; DWORD size = sizeof(path);
         if (RegGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\NVIDIA Corporation\\Global\\NGXCore", L"FullPath",
-                         RRF_RT_REG_SZ | RRF_SUBKEY_WOW6464KEY, nullptr, path, &size) != ERROR_SUCCESS) return false;
+                         RRF_RT_REG_SZ, nullptr, path, &size) != ERROR_SUCCESS) return false;
         const auto file = std::filesystem::path(path) / L"_nvngx.dll";
         if (!file.is_absolute()) return false;
         // Load only the driver's absolute registry path, never a game/dump DLL.
         module = LoadLibraryExW(file.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
 #else
-        module = dlopen("libnvidia-ngx.so.1", RTLD_NOW | RTLD_LOCAL);
+        module = dlopen("libnvidia-ngx.so.1", RTLD_NOW | RTLD_LOCAL | RTLD_NODELETE);
 #endif
         if (!module) return false;
         load(instance_ext, "NVSDK_NGX_VULKAN_GetFeatureInstanceExtensionRequirements");
         load(device_ext, "NVSDK_NGX_VULKAN_GetFeatureDeviceExtensionRequirements");
         load(legacy_extensions, "NVSDK_NGX_VULKAN_RequiredExtensions");
-        return ((instance_ext && device_ext) || legacy_extensions) &&
+        const bool ready = ((instance_ext && device_ext) || legacy_extensions) &&
                load(requirements, "NVSDK_NGX_VULKAN_GetFeatureRequirements") && load(init, "NVSDK_NGX_VULKAN_Init_ProjectID_Ext") &&
                load(capabilities, "NVSDK_NGX_VULKAN_GetCapabilityParameters") && load(allocate, "NVSDK_NGX_VULKAN_AllocateParameters") &&
                load(destroy, "NVSDK_NGX_VULKAN_DestroyParameters") && load(create, "NVSDK_NGX_VULKAN_CreateFeature1") &&
                load(evaluate, "NVSDK_NGX_VULKAN_EvaluateFeature") && load(release, "NVSDK_NGX_VULKAN_ReleaseFeature") &&
                load(shutdown, "NVSDK_NGX_VULKAN_Shutdown1");
+#ifdef _WIN32
+        // Keep the driver core's code resident through Vulkan device teardown,
+        // which may still reference callbacks installed by NGX. Feature,
+        // parameter and GPU memory lifetimes are retired normally; pinning
+        // the module does not keep those resources alive. The old binding
+        // also left its driver module loaded for the process lifetime.
+        HMODULE pinned = nullptr;
+        return ready && GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+                                          reinterpret_cast<LPCWSTR>(init), &pinned);
+#else
+        return ready;
+#endif
     }
     ~Core() {
 #ifdef _WIN32
@@ -153,14 +165,23 @@ bool dlss_frame_contract(const UpscaleConfig& c, const UpscaleFrame& f) {
     return !f.exposure_image.image || (image_valid(f.exposure_image, {1, 1}) && sampled_layout(f.exposure_image.layout) && f.exposure_image.format == VK_FORMAT_R32_SFLOAT);
 }
 
-struct DlssProvider::Impl {
-    std::shared_ptr<Core> core = std::make_shared<Core>();
-    Retire retire;
+struct InitStorage {
     std::wstring cache;
     std::vector<std::wstring> paths;
     std::vector<const wchar_t*> path_pointers;
     Common common{};
     Discovery discovery{};
+    InitStorage(std::string dir, std::vector<std::string> search) : cache(std::filesystem::absolute(dir).wstring()) {
+        for (const auto& p : search) paths.push_back(std::filesystem::absolute(p).wstring());
+        for (const auto& p : paths) path_pointers.push_back(p.c_str());
+        common = {{path_pointers.data(), static_cast<unsigned>(path_pointers.size())}, nullptr, {ngx_log, std::getenv("BBHOST_DLSS_LOG") ? 2 : 0, true}};
+        discovery = {api_version, super_sampling, {1, {.project = {project_id, 0, "bbhost-integration-v1"}}}, cache.c_str(), &common};
+    }
+};
+struct DlssProvider::Impl {
+    std::shared_ptr<Core> core = std::make_shared<Core>();
+    std::shared_ptr<InitStorage> storage;
+    Retire retire;
     VkDevice device = VK_NULL_HANDLE;
     Parameter* caps = nullptr;
     Parameter* params = nullptr;
@@ -168,12 +189,8 @@ struct DlssProvider::Impl {
     bool tried = false, initialized = false, available = false, failed = false;
     std::string problem;
     struct Key { UpscaleExtent render, output; int quality, flags; bool operator==(const Key&) const = default; } key{};
-    Impl(std::string dir, std::vector<std::string> search, Retire r) : retire(std::move(r)), cache(std::filesystem::absolute(dir).wstring()) {
-        for (const auto& p : search) paths.push_back(std::filesystem::absolute(p).wstring());
-        for (const auto& p : paths) path_pointers.push_back(p.c_str());
-        common = {{path_pointers.data(), static_cast<unsigned>(path_pointers.size())}, nullptr, {ngx_log, std::getenv("BBHOST_DLSS_LOG") ? 2 : 0, true}};
-        discovery = {api_version, super_sampling, {1, {.project = {project_id, 0, "bbhost-integration-v1"}}}, cache.c_str(), &common};
-    }
+    Impl(std::string dir, std::vector<std::string> search, Retire r)
+        : storage(std::make_shared<InitStorage>(std::move(dir), std::move(search))), retire(std::move(r)) {}
     bool fail(const char* why, Result r = 0) {
         char text[512]; if (r) std::snprintf(text, sizeof(text), "%s (0x%08x)", why, r); else std::snprintf(text, sizeof(text), "%s", why);
         if (problem != text) std::fprintf(stderr, "DLSS: %s\n", text);
@@ -187,8 +204,8 @@ struct DlssProvider::Impl {
     bool extensions(bool instance, VkInstance vk, VkPhysicalDevice pd, std::vector<std::string>& out) {
         if (!load()) return false;
         unsigned count = 0; VkExtensionProperties* props = nullptr;
-        const auto r = instance ? (core->instance_ext ? core->instance_ext(&discovery, &count, &props) : 0xbad00012u)
-                                : (core->device_ext ? core->device_ext(vk, pd, &discovery, &count, &props) : 0xbad00012u);
+        const auto r = instance ? (core->instance_ext ? core->instance_ext(&storage->discovery, &count, &props) : 0xbad00012u)
+                                : (core->device_ext ? core->device_ext(vk, pd, &storage->discovery, &count, &props) : 0xbad00012u);
         // Some current driver cores export the feature-specific APIs as
         // NotImplemented stubs. The documented legacy query still returns the
         // complete required extension lists; never replace them with two
@@ -215,14 +232,26 @@ struct DlssProvider::Impl {
     void retire_feature() {
         if (!feature && !params) return;
         auto api = core; auto h = std::exchange(feature, nullptr); auto p = std::exchange(params, nullptr);
-        retire([api, h, p] { if (h) api->release(h); if (p) api->destroy(p); });
+        retire([api, h, p] {
+            if (std::getenv("BBHOST_DLSS_LOG")) std::fprintf(stderr, "DLSS: retiring feature %p and parameters %p\n", static_cast<void*>(h), static_cast<void*>(p));
+            if (h) api->release(h); if (p) api->destroy(p);
+        });
     }
     ~Impl() {
         if (!retire) return;
         retire_feature();
         if (initialized) {
             auto api = core; auto p = caps; auto d = device;
-            retire([api, p, d] { if (p) api->destroy(p); api->shutdown(d); });
+            // NGX init arguments and search-path strings must outlive deferred
+            // device shutdown, not only the frontend/provider object.
+            retire([api, p, d, keep = storage] {
+                (void)keep; // Own init data until this deferred callback finishes.
+                if (std::getenv("BBHOST_DLSS_LOG")) std::fprintf(stderr, "DLSS: retiring capabilities %p\n", static_cast<void*>(p));
+                if (p) api->destroy(p);
+                if (std::getenv("BBHOST_DLSS_LOG")) std::fprintf(stderr, "DLSS: shutting down NGX device\n");
+                api->shutdown(d);
+                if (std::getenv("BBHOST_DLSS_LOG")) std::fprintf(stderr, "DLSS: NGX device shutdown complete\n");
+            });
         }
     }
 };
@@ -237,11 +266,11 @@ bool DlssProvider::initialize(VkInstance instance, VkPhysicalDevice physical, Vk
     VkPhysicalDeviceProperties props{}; vkGetPhysicalDeviceProperties(physical, &props);
     if (props.vendorID != 0x10de) return i.fail("DLSS requires a supported NVIDIA device");
     Requirement support{};
-    auto r = i.core->requirements(instance, physical, &i.discovery, &support);
+    auto r = i.core->requirements(instance, physical, &i.storage->discovery, &support);
     if (r != success || support.support != 0) return i.fail("NGX reports this GPU/driver/model unsupported", r);
-    std::error_code error; std::filesystem::create_directories(i.cache, error);
+    std::error_code error; std::filesystem::create_directories(i.storage->cache, error);
     if (error) return i.fail("Cannot create the NGX cache directory");
-    r = i.core->init(project_id, 0, "bbhost-integration-v1", i.cache.c_str(), instance, physical, device, vkGetInstanceProcAddr, vkGetDeviceProcAddr, api_version, &i.common);
+    r = i.core->init(project_id, 0, "bbhost-integration-v1", i.storage->cache.c_str(), instance, physical, device, vkGetInstanceProcAddr, vkGetDeviceProcAddr, api_version, &i.storage->common);
     if (r != success) return i.fail("NGX project initialization failed", r);
     i.device = device; i.initialized = true;
     r = i.core->capabilities(&i.caps);

@@ -181,3 +181,24 @@ The source SELF SHA-256 was rechecked afterwards and remained unchanged.
 
 Next priority is DLSS before FSR 3.1/4; see `dlss-integration.md` for verified
 NGX/runtime findings and the remaining scene/engine prerequisites.
+
+### NGX backend and recovered shadNet website
+
+`1e835ab` adapts the old independent DLSS binding to the common bbhost Vulkan
+frame contract. `418401f` obtains actual NGX optimal settings, supports the
+driver's complete extension-discovery fallback, and preserves reset events
+when native fallback is used. The real RTX 5070 probe validates 96 synthetic
+DLSS/DLAA frames at 1080p, 1440p, 4K and ultrawide. Deferred NGX init storage
+and driver-module lifetimes are retained through shutdown. Details and
+remaining engine gates are in `dlss-integration.md`. In-game DLSS, camera/
+object motion, jitter injection and the pre-Scaleform resolve remain pending.
+
+`1d46cd7` connects the launcher account-page field to the recovered local
+shadNet website. The user's `bloodborne-bootstrap` checkout contains the
+HTTP listener, pages, registration/login and shared game-account service;
+these changes were not present in its published GitHub branches. The WPF
+button derives the editable `/register` URL on port 31316 from the configured
+server origin and persists it in native TOML. It does not treat web cookies as
+game tokens or enable an incompatible server. See `shadnet-compatibility.md`
+for source provenance and the still-required bbhost auth/Matching2 adapter.
+The local server checkout, website, database and old repository are untouched.
