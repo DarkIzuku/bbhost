@@ -1,0 +1,48 @@
+name: Windows integration
+on:
+  push:
+    branches: [bloodborne-pc-integration-v1]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: windows-integration-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  runtime:
+    runs-on: ubuntu-24.04
+    container: archlinux:latest
+    timeout-minutes: 90
+    steps:
+      - name: Install build bootstrap
+        run: pacman -Syu --noconfirm --needed git
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Trust checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: actions/cache@v4
+        with:
+          path: build/win-deps/prefix
+          key: win-deps-${{ hashFiles('tools/win_deps.sh') }}
+      - name: Build upstream Windows runtime and plugins
+        run: CI_PACMAN=1 tools/ci_windows.sh
+      - name: Test Windows ABI under Wine
+        run: tools/win_tests.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bbhost-windows-${{ github.sha }}
+          path: |
+            build/win/*.zip
+            build/win/*.debug.exe
+          if-no-files-found: error
+      - name: Preserve diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build-logs-${{ github.sha }}
+          path: |
+            build/win-deps/*.log
+            build-win.*.log
+          if-no-files-found: ignore
