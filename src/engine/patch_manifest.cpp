@@ -199,7 +199,8 @@ bool tpf_names(const std::vector<std::uint8_t>& tpf, const std::string& name) {
 // update that brought it (1.07), so a game folder holding the base game's
 // versions has none of them: the edition's title art, MENU_Title_00004 in
 // menu/title.tpf.dcx - without it the title movie fills its picture flat
-// green (a player's game folder, 2026-10-07) - and the three areas' maps.
+// green (a player's game folder, 2026-10-07) - and the three areas' maps,
+// m34-m36 (their lamps are the Old Hunters' headstone's, slots 44-54).
 // What is missing, or "" when it is all there; read as the game will read it,
 // update folder and mods included.
 std::string old_hunters_missing() {
@@ -209,7 +210,7 @@ std::string old_hunters_missing() {
     const std::vector<std::uint8_t> raw((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     const std::vector<std::uint8_t> tpf = gcn::dcx_decompress(raw);
     if (!tpf_names(tpf.empty() ? raw : tpf, "MENU_Title_00004")) return "Old Hunters title art (MENU_Title_00004 in menu/title.tpf.dcx)";
-    for (const char* map : {"m33_00_00_00", "m34_00_00_00", "m35_00_00_00"}) {
+    for (const char* map : {"m34_00_00_00", "m35_00_00_00", "m36_00_00_00"}) {
         std::error_code ec;
         if (!std::filesystem::is_directory(hle_fs_map_path(("/app0/dvdroot_ps4/map/" + std::string(map)).c_str()), ec))
             return std::string("map/") + map + " (an Old Hunters area)";
