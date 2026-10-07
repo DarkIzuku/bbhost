@@ -98,6 +98,14 @@ void config_set_skip_intro(bool on);
 //       rewritten with the new ones (scheme, verify_tls, require_account,
 //       auth_server).
 constexpr int kUserConfigVersion = 3;
+// The game folder's version, from its sce_sys/param.sfo: APP_VER ("01.09")
+// and CATEGORY ("gp" the game with an update, "gd" without); both empty when
+// the file cannot be read. The 1.09 eboot needs the 1.09 update's files: a
+// game folder they were not copied over stops the game when it reads one.
+struct App0Version {
+    std::string app_ver, category;
+};
+App0Version config_app0_version(const std::string& app0);
 // The PC enhancements, the same way: the options file's choices (F10, the
 // System menu's PC Enhancements, the setup window's tab) once it is read. A
 // BBHOST_CHANGE_APPEARANCE, BBHOST_REBIRTH or BBHOST_FIVE_PLAYERS of 0 or 1

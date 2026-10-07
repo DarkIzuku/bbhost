@@ -489,6 +489,21 @@ LauncherResult launcher_run(const HostConfig& cfg, const std::string& reason, bo
                     : is_dir(app0 + "/../dvdroot_ps4") || fs::path(app0).filename() == "dvdroot_ps4"
                                            ? "pick the folder above dvdroot_ps4, not dvdroot_ps4 itself"
                                            : "no dvdroot_ps4 in it");
+        if (app0_ok) {
+            // Its version: the 1.09 update's files copied over it, or the game
+            // stops when it reads one. A warning, not a stop: Play stays on.
+            static std::string seen;
+            static App0Version ver;
+            if (seen != app0) {
+                seen = app0;
+                ver = config_app0_version(app0);
+            }
+            status_line(ver.app_ver == "01.09", "version 01.09 (the update's files are in it)",
+                        ver.app_ver.empty() ? std::string("no sce_sys/param.sfo in it - is it the whole game folder?")
+                                            : "version " + ver.app_ver +
+                                                  " - copy the 1.09 update's files over this folder, or the game stops "
+                                                  "while loading");
+        }
         if (path_row("Eboot (the 1.09 update's eboot.bin, decrypted)", kEboot, false, "C:/Games/Bloodborne/eboot-109-decrypted.bin") ||
             (eboot.path != f[kEboot].str() && !ImGui::IsAnyItemActive())) {
             eboot = check_eboot(f[kEboot].str());

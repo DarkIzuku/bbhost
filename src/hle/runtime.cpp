@@ -1,4 +1,5 @@
 #include "hle/hle.h"
+#include "hle/fs.h"
 #include "hle/np.h"
 #include "hle/common.h"
 #include "hle/guest_fs.h"
@@ -127,6 +128,12 @@ GUEST_ABI void hle_dl_panic(const char* file, int line, const char* msg, std::ui
     if (logged.fetch_add(1) < 64) {
         host_log("DL_PANIC %s(%d): %s", file ? file : "?", line, msg ? msg : "?");
         panic_backtrace(rsp, rbp);
+        if (const std::string files = hle_fs_problem_files(); !files.empty())
+            host_log("DL_PANIC: game files found missing or empty, newest last: %s", files.c_str());
+        if (file && std::strstr(file, "FileTransferTask"))
+            host_log("DL_PANIC: the game's file loader stopped on a file it could not read: a game file is missing or "
+                     "empty. The 1.09 update's files must be copied over the game folder (its sce_sys/param.sfo then "
+                     "says APP_VER 01.09), and the dump must be complete.");
     }
     if (keep_going) {
         return;

@@ -805,6 +805,16 @@ void config_set_online(const std::string& host, const std::string& scheme, bool 
     g_cfg.auth_server = auth_server;
 }
 
+App0Version config_app0_version(const std::string& app0) {
+    App0Version v;
+    std::map<std::string, SfoValue> sfo;
+    std::string err;
+    if (app0.empty() || !sfo_read(app0 + "/sce_sys/param.sfo", &sfo, &err)) return v;
+    if (sfo.count("APP_VER")) v.app_ver = sfo["APP_VER"].text;
+    if (sfo.count("CATEGORY")) v.category = sfo["CATEGORY"].text;
+    return v;
+}
+
 bool config_write_template(const std::string& path) {
     std::ofstream out(path);
     if (!out) {

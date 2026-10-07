@@ -906,6 +906,16 @@ int main(int argc, char** argv) {
             host_options_save_now();
         }
     }
+    if (const App0Version v = config_app0_version(cfg.app0); v.app_ver.empty()) {
+        host_log("app0: no sce_sys/param.sfo could be read in %s - is it the whole game folder?", cfg.app0.c_str());
+    } else {
+        host_log("app0: the game folder is version %s (category %s)", v.app_ver.c_str(), v.category.c_str());
+        if (v.app_ver != "01.09")
+            host_log("app0: WARNING - the 1.09 eboot needs the 1.09 update's files, and this game folder is version %s. "
+                     "Copy the update's files over it (its sce_sys/param.sfo then says APP_VER 01.09); without them "
+                     "the game stops when it reads a file only the update has.",
+                     v.app_ver.c_str());
+    }
     hle_fs_set_roots(cfg.app0.c_str(), cfg.data.empty() ? nullptr : cfg.data.c_str(),
                      cfg.tmp.empty() ? nullptr : cfg.tmp.c_str(), eboot,
                      cfg.mods.empty() ? nullptr : cfg.mods.c_str());

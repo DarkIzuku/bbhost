@@ -13,6 +13,7 @@
 #include <cstring>
 #include <atomic>
 #include <mutex>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -791,6 +792,29 @@ bool fs_trace() {
     return on;
 }
 
+// Game files that would not open, or opened empty. The game's file loader
+// stops on either far from the open (DL_PANIC FileTransferTask.cpp(865): a
+// file of size 0), so each is logged (the first 64) and the last few are kept
+// for the panic report (hle_fs_problem_files). A game that runs probes a few
+// files it does without (menu/logo.tpf.dcx), so one here is a lead, not a
+// fault.
+std::mutex g_problem_mu;
+std::vector<std::string> g_problems;  // newest last, each once
+std::set<std::string> g_problem_seen;
+
+void note_problem(const char* guest, const std::string& host, const char* what) {
+    if (!guest || std::strncmp(guest, "/app0/", 6) != 0) return;
+    std::lock_guard<std::mutex> lk(g_problem_mu);
+    const std::string entry = std::string(guest) + " (" + what + ")";
+    if (g_problem_seen.insert(entry).second) {
+        if (g_problem_seen.size() <= 64) host_log("FS: %s %s (%s)", guest, what, host.empty() ? "no mapping" : host.c_str());
+    } else {
+        g_problems.erase(std::remove(g_problems.begin(), g_problems.end(), entry), g_problems.end());
+    }
+    g_problems.push_back(entry);
+    if (g_problems.size() > 8) g_problems.erase(g_problems.begin());
+}
+
 int log_open(const char* path, const std::string& host, int flags, int result) {
     static int logs;
     if (logs < 24 || fs_trace()) {
@@ -798,6 +822,7 @@ int log_open(const char* path, const std::string& host, int flags, int result) {
                  result);
         ++logs;
     }
+    if (result < 0) note_problem(path, host, "is not in the game folder");
     return result;
 }
 
@@ -840,6 +865,8 @@ GUEST_ABI int hle_kernel_open(const char* path, int flags, int mode) {
             return log_open(path, host, flags, sce_err(errno));
         }
         hf.host_fd = fd;
+        // No file of a PS4 game is empty: a dump with one is incomplete.
+        if (st_ok == 0 && st.st_size == 0) note_problem(path, host, "is empty (0 bytes)");
     }
     std::lock_guard<std::mutex> lock(g_fs_mu);
     int id = g_fd_next++;
@@ -1233,6 +1260,13 @@ void hle_fs_umount(const char* guest_prefix_str) {
             return;
         }
     }
+}
+
+std::string hle_fs_problem_files() {
+    std::lock_guard<std::mutex> lk(g_problem_mu);
+    std::string out;
+    for (const std::string& f : g_problems) out += (out.empty() ? "" : "; ") + f;
+    return out;
 }
 
 std::string hle_fs_map_path(const char* guest) { return guest_to_host(guest); }

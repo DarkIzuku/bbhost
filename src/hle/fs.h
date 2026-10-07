@@ -26,6 +26,9 @@ void hle_fs_add_plugin_overlay(const char* dir);
 std::string hle_fs_overlay_file(const char* rel);
 void hle_register_fs();
 std::string hle_fs_map_path(const char* guest);
+// The game files most recently found missing or empty, newest last ("" for
+// none): what a panic in the game's file loader most likely stopped on.
+std::string hle_fs_problem_files();
 // The same without the plugins' overlays: the file a plugin starts from (the
 // player's mods, the generated files, the dump), never its own output.
 std::string hle_fs_map_path_base(const char* guest);
