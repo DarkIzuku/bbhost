@@ -3,8 +3,7 @@
 #include "core/elf.h"
 #include "engine/addr.h"
 #include "hle/fs.h"
-#include "host/options.h"
-#include "host/settings.h"
+#include "host/plugins.h"
 #include "log.h"
 
 #include <cstdio>
@@ -113,7 +112,7 @@ void debug_menu_toggle() {
 }
 
 void debug_menu_install(ElfImage* image) {
-    if (!host_settings().debug_menu) {
+    if (!plugins_active("debug_menu")) {
         return;
     }
     for (const char* f : kFonts) {

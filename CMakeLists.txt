@@ -184,6 +184,16 @@ endfunction()
 bb_plugin(randomizer plugins/randomizer/randomizer.cpp)
 bb_plugin(boss_rush plugins/boss_rush/boss_rush.cpp)
 bb_plugin(mutators plugins/mutators/mutators.cpp)
+# The Debug Menu plugin carries its glyphs (plugins/debug_menu/font14.bin,
+# tools/make_debug_font.py) as bytes: build/gen/debug_font14.inc, rewritten
+# only when the file changes.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/plugins/debug_menu/font14.bin)
+file(READ ${CMAKE_SOURCE_DIR}/plugins/debug_menu/font14.bin BB_FONT14_HEX HEX)
+string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," BB_FONT14_BYTES "${BB_FONT14_HEX}")
+file(WRITE ${CMAKE_BINARY_DIR}/gen/debug_font14.inc.new "${BB_FONT14_BYTES}\n")
+configure_file(${CMAKE_BINARY_DIR}/gen/debug_font14.inc.new ${CMAKE_BINARY_DIR}/gen/debug_font14.inc COPYONLY)
+bb_plugin(debug_menu plugins/debug_menu/debug_menu.cpp)
+target_include_directories(bb_plugin_debug_menu PRIVATE ${CMAKE_BINARY_DIR}/gen)
 
 target_link_libraries(bbhost PRIVATE atrac9 monocypher)
 # A release build (the release workflow) looks for updates by default; one
@@ -312,6 +322,10 @@ if(UNIX)
   add_executable(stun_test tests/stun_test.cpp src/net/stun.cpp)
   target_include_directories(stun_test PRIVATE src)
   add_test(NAME stun_test COMMAND stun_test)
+  add_executable(debug_font_test tests/debug_font_test.cpp)
+  target_include_directories(debug_font_test PRIVATE plugins/debug_menu)
+  target_compile_definitions(debug_font_test PRIVATE BB_FONT14_PATH="${CMAKE_SOURCE_DIR}/plugins/debug_menu/font14.bin")
+  add_test(NAME debug_font_test COMMAND debug_font_test)
   add_executable(config_test tests/config_test.cpp src/core/config.cpp src/core/sfo.cpp)
   target_include_directories(config_test PRIVATE src ${CMAKE_BINARY_DIR}/gen)
   add_dependencies(config_test bbhost_version)
@@ -414,7 +428,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND CMAKE_CROSSCOMPILING)
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     # The official plugins too: the package carries them, and a CI build makes
     # nothing it is not asked for (v0.2.0's Windows zip shipped without them).
-    DEPENDS bbhost bb_plugin_randomizer bb_plugin_boss_rush bb_plugin_mutators
+    DEPENDS bbhost bb_plugin_randomizer bb_plugin_boss_rush bb_plugin_mutators bb_plugin_debug_menu
     USES_TERMINAL)
 else()
   add_custom_target(smoke

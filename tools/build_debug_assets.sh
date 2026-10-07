@@ -1,16 +1,13 @@
 #!/bin/bash
 # Put the debug menu's resources into the port's asset overlay.
 #
-# The developers' debug menu (engine/debug_menu.h, the `debug_menu` option)
+# The developers' debug menu (engine/debug_menu.h, the Debug Menu plugin)
 # draws with a font the retail disc does not ship: adhoc:/font/DbgFont14h.ccm
-# and .tpf. They come from the community's "Debug Menu Restoration" package,
+# and .tpf. The plugin makes its own from public-domain fonts; this puts the
+# original instead - from the community's "Debug Menu Restoration" package,
 # with the debug-font shaders in adhoc:/FontShader, which the patch skips (they
-# are copied anyway). This extracts them into data/mods/dvdroot_ps4/adhoc,
-# where the file HLE finds them ahead of the dump - so the port runs from its
-# own copy, and a modified one (a translated font, say) goes here too. The dump
-# is never written. tools/win_package.sh and tools/package_linux.sh run this
-# into the package's data/mods when tmp/ holds the archive; a package built
-# without it has no debug menu (docs/running.md, "The debug menu").
+# are copied anyway) - into the mods folder, where it wins over the plugin's.
+# The dump is never written.
 #
 #   tools/build_debug_assets.sh ["tmp/Debug Menu Restoration.7z"] [OUT]
 #   (OUT: the adhoc directory to fill, default data/mods/dvdroot_ps4/adhoc)

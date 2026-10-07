@@ -5,6 +5,7 @@
 #include "core/elf.h"
 #include "core/thunk.h"
 #include "engine/addr.h"
+#include "engine/debug_menu.h"
 #include "guest_abi.h"
 #include "hle/fs.h"
 #include "hle/hle.h"
@@ -492,8 +493,6 @@ Toggle g_toggles[] = {
     {"vsync", 116000, 1, 0xff},
     {"window_mode", 116001, 0, 0xff},
     {"skip_logos", 116004, 0, 0xff},
-    // The developers' debug menu (engine/debug_menu.h), next run.
-    {"debug_menu", 116006, 0, 0xff},
     // The frames per second the presenter counts (host/window.cpp).
     {"fps_counter", 116007, 0, 0xff},
 };
@@ -914,10 +913,15 @@ void to_utf16(char16_t (&out)[N], const char* s) {
 const char* const kKeyPageNames[kBindPages] = {"Movement", "Combat", "Items and Gestures", "Camera and Menus",
                                                "Other"};
 
-// The row's action; kBindCount or more for a row the last, short page leaves
-// blank, which shows nothing and takes no capture.
+// The actions listed: the Debug Menu key only when the menu is there (the
+// Debug Menu plugin, engine/debug_menu.h); it is the last.
+static_assert(kBindDebugMenu == kBindCount - 1, "the Debug Menu key is the last action");
+int keys_listed() { return debug_menu_active() ? kBindCount : kBindDebugMenu; }
+
+// The row's action; keys_listed() or more for a row the last, short page
+// leaves blank, which shows nothing and takes no capture.
 int keys_action(int row) { return g_keys.page * kBindPerPage + row - 1; }
-bool keys_row_bound(int row) { return row > 0 && keys_action(row) < kBindCount; }
+bool keys_row_bound(int row) { return row > 0 && keys_action(row) < keys_listed(); }
 
 // Restore Defaults: the row right after the last action, on the last page.
 // The section has no room for the game's own Defaults row (its eight rows fill
@@ -925,7 +929,7 @@ bool keys_row_bound(int row) { return row > 0 && keys_action(row) < kBindCount; 
 // asks twice - the first press says what the second will do - so a stray
 // Enter cannot wipe a set of bindings. Moving off it, or four seconds, and
 // it asks again from the start.
-bool keys_row_reset(int row) { return row > 0 && keys_action(row) == kBindCount; }
+bool keys_row_reset(int row) { return row > 0 && keys_action(row) == keys_listed(); }
 enum class KeysReset { Idle, Armed, Done };
 KeysReset g_keys_reset = KeysReset::Idle;
 std::chrono::steady_clock::time_point g_keys_reset_at;

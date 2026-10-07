@@ -207,11 +207,10 @@ Setting g_set[kSettingCount] = {
      true},
     {"skip_logos", "Skip company logos", {"Off", "On"}, 0,
      "The three logos before the title screen, and the warning that the last session did not end with Exit Game.", true},
-    // The shadPS4 community patch "Restore Debug Menu" (engine/debug_menu.h).
-    // It needs DbgFont14h.ccm/.tpf in dvdroot_ps4/adhoc/font and refuses
-    // without them, because the game crashes at boot without its font.
-    {"debug_menu", "Debug menu", {"Off", "On"}, 0,
-     "Requires a restart. The developers' debug menu; ` opens and closes it.", true},
+    // The old switch for the developers' debug menu, which the Debug Menu
+    // plugin replaced (engine/debug_menu.h): no row shows it, and an "On" an
+    // older bbhost saved turns the plugin on once (main.cpp).
+    {"debug_menu", "Debug menu", {"Off", "On"}, 0, "Replaced by the Debug Menu plugin.", true},
     // Lance McDonald's "Restore Debug Camera" (patches/debug-camera.toml). Its
     // code takes the place of a debug-only load-test step, so the debug menu's
     // LOAD TEST and DUNGEON MOVEMAP TEST crash while it is on.
@@ -266,7 +265,6 @@ const Row g_rows[] = {
     {Row::Option, nullptr, kFivePlayers},
     {Row::Header, "STARTUP"},
     {Row::Option, nullptr, kSkipLogos},
-    {Row::Option, nullptr, kDebugMenu},
     {Row::Option, nullptr, kDebugCamera},
     // The private server's account. No passwords: link this PC to
     // the account signed into on the website with Discord, or make one held
@@ -970,9 +968,6 @@ void host_options_load() {
     if (const char* e = std::getenv("BBHOST_MOUSE_SENS"); e && e[0]) {
         const int v = std::atoi(e);
         g_set[kMouseSens].index = v < 0 ? 0 : v > 10 ? 10 : v;
-    }
-    if (const char* e = std::getenv("BBHOST_DEBUG_MENU"); e && e[0]) {
-        g_set[kDebugMenu].index = e[0] == '0' ? 0 : 1;
     }
     if (const char* e = std::getenv("BBHOST_MOUSE_CURSOR"); e && e[0]) {
         g_set[kDrawCursor].index = e[0] == '0' ? 1 : 0;

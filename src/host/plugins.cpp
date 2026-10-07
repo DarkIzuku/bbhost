@@ -1207,6 +1207,13 @@ std::vector<std::string> rules_without(const std::string& rules, const std::vect
 }
 }  // namespace
 
+bool plugins_active(const std::string& name) {
+    for (const Plugin& p : g_plugins) {
+        if (p.name == name && !p.visitor) return true;
+    }
+    return false;
+}
+
 std::string plugins_ruleset() {
     {
         std::lock_guard<std::mutex> rk(g_rules_mu);

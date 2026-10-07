@@ -40,7 +40,6 @@
 116004	Skip Company Logos	Skips the logos and the Exit Game warning at startup. Applies on the next run.
 116005	Frame Cap	30 is the game's own pace; 60 or more runs the game at 60 (applies on the next run). Above 60 only caps presentation.
 116007	FPS Counter	Frames per second actually presented, in the top right corner.
-116006	Debug Menu (Restart)	Requires a restart to turn on or off. The developers' debug menu; ` opens it.
 116020	PC Settings	
 116030	30	
 116031	60	

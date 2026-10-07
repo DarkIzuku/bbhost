@@ -26,6 +26,7 @@
 #include "host/plugin_ui.h"
 #endif
 #include "host/settings.h"
+#include "engine/debug_menu.h"
 #include "host/plugins.h"
 #include "host/sampler.h"
 #include "host/audio.h"
@@ -892,14 +893,26 @@ int main(int argc, char** argv) {
         const HostConfig& c = config();
         host_log("pc enhancements: mirror %s, rebirth %s, five players %s", c.change_appearance ? "on" : "off", c.rebirth ? "on" : "off",
                  c.five_players ? "on" : "off");
-        if (h.debug_camera && h.debug_menu)
-            host_log("debug camera: on with the debug menu - its LOAD TEST and DUNGEON MOVEMAP TEST crash the game "
-                     "(the camera's code takes their step's place)");
+        // The debug menu was a PC Settings switch before the Debug Menu plugin
+        // took its place: a player who had it on gets the plugin turned on,
+        // once, and the old switch goes off.
+        if (h.debug_menu) {
+            if (config_value("plugins.debug_menu").empty()) {
+                config_set_values(config_user_file(), {{"plugins", "debug_menu", "true"}});
+                config_value_set("plugins.debug_menu", "true");
+                host_log("debug-menu: PC Settings had it on; the Debug Menu plugin is turned on in its place");
+            }
+            host_opt_set("debug_menu", false);
+            host_options_save_now();
+        }
     }
     hle_fs_set_roots(cfg.app0.c_str(), cfg.data.empty() ? nullptr : cfg.data.c_str(),
                      cfg.tmp.empty() ? nullptr : cfg.tmp.c_str(), eboot,
                      cfg.mods.empty() ? nullptr : cfg.mods.c_str());
     plugins_load();  // before the HLE table is bound: a plugin may replace an import
+    if (host_settings().debug_camera && plugins_active("debug_menu"))
+        host_log("debug camera: on with the debug menu - its LOAD TEST and DUNGEON MOVEMAP TEST crash the game "
+                 "(the camera's code takes their step's place)");
     register_hle();
 
     ElfImage image{};
@@ -935,6 +948,9 @@ int main(int argc, char** argv) {
 
     hle_patch_guest(&image);
     plugins_image(&image);  // the plugins' patches and hooks, after the host's own
+    // The developers' debug menu, when the Debug Menu plugin is on: after the
+    // plugins' image phase, which writes its font (engine/debug_menu.h).
+    debug_menu_install(&image);
 
     bool windowed = false;
     host_log("config: %s headless=%d %dx%d", cfg.config_layers.empty() ? "(none)" : cfg.config_layers.c_str(),

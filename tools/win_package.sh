@@ -24,14 +24,6 @@ name=bbhost-win-$rev
 dir=$out/$name
 rm -rf "$dir"
 mkdir -p "$dir/data" "$dir/build"
-# The debug menu's font and font shaders (engine/debug_menu.h): the retail
-# disc has none, and the debug_menu option refuses without them, so the
-# package carries them in its asset overlay (data/mods, ./data in bbhost.toml).
-if [ -f "tmp/Debug Menu Restoration.7z" ]; then
-    tools/build_debug_assets.sh "tmp/Debug Menu Restoration.7z" "$dir/data/mods/dvdroot_ps4/adhoc" > /dev/null
-else
-    echo "WARNING: no tmp/Debug Menu Restoration.7z - this package has no debug menu" >&2
-fi
 cp -r patches "$dir/patches"
 mkdir -p "$dir/plugins"
 cp include/bbhost_plugin.h "$dir/plugins/"
@@ -129,9 +121,12 @@ Plugins
       randomizer = true    # every pickup and shop shuffled from a seed
       boss_rush = true     # the game's bosses back to back, timed
       mutators = true      # speed, bullet time, one-hit, chaos and more
+      debug_menu = true    # the developers' debug menu: \` opens it
   Each one's settings go in a section of its own name ([randomizer],
   [boss_rush], [mutators]); docs/plugins.md in the repository lists them.
-  Use the boss rush on a save of its own.
+  Use the boss rush on a save of its own. Cheating against other players
+  with the debug menu gets an account banned; trying it out online with
+  friends is fine.
 
 Reporting a problem
   Send the log of that session from the logs folder (privately: it contains

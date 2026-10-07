@@ -122,28 +122,23 @@ bbhost players. The setup window picks the server and links an account; see
 
 ## The debug menu
 
-The developers' debug menu is still in the game, switched off. bbhost restores
-it (the community's "Restore Debug Menu" patch by Whitehawkx and auser1337):
-turn on **Debug menu** in the setup window's Game tab or in PC Settings, start
-the game again, and the `` ` `` key opens and closes it. While it is open the
-character stands still; the arrows move, Enter opens an entry and Backspace
-goes back. Its text is the developers' Japanese.
+The developers' debug menu is still in the game, switched off. The **Debug
+Menu** plugin restores it (the community's "Restore Debug Menu" patch by
+Whitehawkx and auser1337): turn it on in the setup window's Plugins tab and
+start the game again. The `` ` `` key then opens and closes the menu (Key
+Bindings can move it). While it is open the character stands still; the arrows
+move, Enter opens an entry and Backspace goes back. Its text is the developers'
+Japanese.
 
-The menu draws with a debug font that the game does not ship, so it needs two
-files that bbhost does not include:
+The menu draws with a debug font the game does not ship. The plugin makes one
+from the public-domain X11 fonts k14 and 7x14, so nothing has to be
+downloaded. A `DbgFont14h.ccm` and `.tpf` of your own in the mods folder
+(`<mods>/dvdroot_ps4/adhoc/font/`; [modding.md](modding.md)) are used instead -
+`tools/build_debug_assets.sh` puts the community "Debug Menu Restoration"
+package's original font there.
 
-```
-dvdroot_ps4/adhoc/font/DbgFont14h.ccm
-dvdroot_ps4/adhoc/font/DbgFont14h.tpf
-```
-
-They are part of the "Debug Menu Restoration" mod package. Put them in the
-mods folder (`<data>/mods` unless `paths.mods` names another; see
-[modding.md](modding.md)) as `<mods>/dvdroot_ps4/adhoc/font/DbgFont14h.ccm` and
-`.tpf`, so the game dump stays untouched; a copy in the dump's
-`dvdroot_ps4/adhoc/font/` works too. `tools/build_debug_assets.sh` extracts
-them from the package's archive. The debug font shaders that come with it are
-not needed: the patch skips them.
-
-Without the font the option stays off - the game would crash at start - and
-the log says which file is missing (`debug-menu: off - ... is missing`).
+**Playing online:** the menu can hand out items and change the rules, so
+sessions with the plugin on keep their messages, bloodstains and statistics
+apart from other players'. Using it to cheat against other players - in their
+worlds, in invasions or on the leaderboards - gets an account banned. Trying it
+out online with friends is fine.

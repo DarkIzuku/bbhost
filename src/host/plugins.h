@@ -64,6 +64,9 @@ void plugins_run_action(const std::string& name, const std::string& action);
 // The server keeps those runs off the normal map and stats, and shows the
 // player only the bloodstains and messages of the same ruleset.
 std::string plugins_ruleset();
+// The plugin of that name is loaded and on for this run (not a visitor):
+// what host features a plugin turns on ask (engine/debug_menu.h).
+bool plugins_active(const std::string& name);
 // The loaded plugins that can play by a host's rules (BB_PLUGIN_ADOPTS_RULES),
 // "randomizer" - the X-BBHost-Adopt header; "" for none.
 std::string plugins_adopts();

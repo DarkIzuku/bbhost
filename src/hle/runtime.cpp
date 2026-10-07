@@ -11,7 +11,6 @@
 #include "engine/key_prompts.h"
 #include "engine/menu_pointer.h"
 #include "engine/option_menu.h"
-#include "engine/debug_menu.h"
 #include "engine/summon_invite.h"
 #include "engine/np_test.h"
 #include "engine/gx_resources.h"
@@ -374,8 +373,6 @@ void hle_patch_guest(ElfImage* image) {
     // (engine/frame_pool.h). BBHOST_POOL_FIX=0 keeps the game's.
     frame_pool_install(image);
     graphics_patch_install(image);
-    // The developers' debug menu, when the player turned it on (engine/debug_menu.h).
-    debug_menu_install(image);
     // The co-op invite as a type-1 item for the game's own summon manager
     // (engine/summon_invite.h): off, the game's own invite is used;
     // BBHOST_SUMMON_INVITE=1 brings ours back for experiments.

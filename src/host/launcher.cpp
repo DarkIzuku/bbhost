@@ -183,7 +183,6 @@ LauncherResult launcher_run(const HostConfig& cfg, const std::string& reason, bo
     host_options_load();
     bool fullscreen = host_opt_index("window_mode") == 1;
     bool skip_logos = host_opt_get("skip_logos");
-    bool debug_menu = host_opt_get("debug_menu");
     bool debug_camera = host_opt_get("debug_camera");
     int frame_cap = host_opt_frame_cap();
     int resolution = host_opt_resolution_index();
@@ -314,7 +313,6 @@ LauncherResult launcher_run(const HostConfig& cfg, const std::string& reason, bo
         all_post_processors_was = all_post_processors;
         host_opt_set_index("window_mode", fullscreen ? 1 : 0);
         host_opt_set("skip_logos", skip_logos);
-        host_opt_set("debug_menu", debug_menu);
         host_opt_set("debug_camera", debug_camera);
         host_opt_set_frame_cap(kCaps[cap_choice]);
         host_opt_set_resolution_index(resolution);
@@ -587,8 +585,6 @@ LauncherResult launcher_run(const HostConfig& cfg, const std::string& reason, bo
         ImGui::Checkbox("Fullscreen", &fullscreen);
         ImGui::SameLine(260 * scale);
         ImGui::Checkbox("Skip company logos", &skip_logos);
-        ImGui::Checkbox("Debug menu", &debug_menu);
-        ImGui::SameLine(260 * scale);
         ImGui::Checkbox("Debug camera", &debug_camera);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Lance McDonald's free camera: hold Interact (E) and press L3 (Left Ctrl). The debug menu's LOAD TEST crashes while it is on.");
