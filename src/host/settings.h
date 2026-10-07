@@ -23,6 +23,8 @@ struct HostSettings {
     int frame_cap = 30;   // frames a second presented; 0 is no cap
     bool fps_counter = false;
     bool spatial_upscale = true;  // FSR1, when render size is smaller than output
+    bool upscale_rcas = true;
+    float upscale_sharpness_stops = 0.2f;
     bool live_resolution = true;  // rebuilding GX targets, next-start switch
     int res_width = 1920, res_height = 1080;  // the render resolution (BBHOST_RES wins)
 

@@ -110,6 +110,7 @@ add_executable(bbhost
   src/host/options.cpp
   src/host/launcher_bridge.cpp
   src/host/launcher_gpu.cpp
+  src/host/upscale_policy.cpp
   src/host/updater.cpp
   src/host/update_verify.cpp
   src/host/bindings.cpp
@@ -233,7 +234,7 @@ if(Vulkan_FOUND)
   target_include_directories(replay_common PUBLIC src)
   target_link_libraries(replay_common PUBLIC Vulkan::Headers)
   target_sources(bbhost PRIVATE src/host/gpu.cpp src/host/gpu_memtrack.cpp src/host/gpu_mutex.cpp src/host/buffer_shadow.cpp src/host/recorder.cpp src/host/bindless.cpp src/host/render.cpp src/host/textures.cpp src/host/gpu_untile.cpp src/host/depth_copy.cpp src/host/fsr.cpp src/host/glitch.cpp src/host/draw_capture.cpp
-                                src/host/shader_patch.cpp)
+                                src/host/shader_patch.cpp src/host/upscaler.cpp)
   target_link_libraries(bbhost PRIVATE Vulkan::Vulkan gcn replay_common)
   # Which user-data tables a no-fallback shader still reads, from the SPIRV-Tools
   # optimizer; without it every table is built.
@@ -300,6 +301,9 @@ if(UNIX)
   add_executable(game_installation_test tests/game_installation_test.cpp src/core/game_installation.cpp src/core/sfo.cpp src/core/sha256.cpp)
   target_include_directories(game_installation_test PRIVATE src)
   add_test(NAME game_installation_test COMMAND game_installation_test)
+  add_executable(upscale_policy_test tests/upscale_policy_test.cpp src/host/upscale_policy.cpp)
+  target_include_directories(upscale_policy_test PRIVATE src)
+  add_test(NAME upscale_policy_test COMMAND upscale_policy_test)
   find_package(Python3 COMPONENTS Interpreter QUIET)
   if(Python3_Interpreter_FOUND)
     add_test(NAME world_baseline_test COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/world_baseline_test.py)

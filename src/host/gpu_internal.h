@@ -1070,7 +1070,7 @@ bool render_blit_display_locked(VkCommandBuffer cmd, std::uint64_t display_va, V
 // takes storage writes: the last pass writes it directly.
 bool fsr_upscale_locked(VkCommandBuffer cmd, VkImage src, VkFormat src_format, std::uint32_t src_w, std::uint32_t src_h,
                         std::uint32_t src_x, std::uint32_t src_y, std::uint32_t sw, std::uint32_t sh, VkImage dst, VkRect2D area,
-                        VkImageView dst_view = VK_NULL_HANDLE);
+                        VkImageView dst_view = VK_NULL_HANDLE, float sharpness = 0.2f, bool sharpening = true);
 // A CP DMA fill that covers a render target: clear the image instead.
 bool render_clear_by_fill_locked(std::uint64_t va, std::size_t bytes, std::uint32_t value);
 // A render target whose memory a shader fills with one value: clear the image.

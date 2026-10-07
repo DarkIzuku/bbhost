@@ -58,6 +58,8 @@ enum SettingId {
     kFrameCap,
     kFpsCounter,
     kUpscaler,
+    kUpscaleRcas,
+    kUpscaleSharpness,
     kLiveResolution,
     kFov,
     kCameraDistance,
@@ -120,6 +122,10 @@ Setting g_set[kSettingCount] = {
      "Frames per second actually presented, in the top right corner.", false},
     {"upscaler", "Upscaling", {"Native / Off", "FSR 1"}, 1,
      "FSR 1 reconstructs a smaller render to the window size. At equal sizes the native image is used. Temporal providers are not integrated yet.", false},
+    {"upscale_rcas", "RCAS sharpening", {"Off", "On"}, 1,
+     "The sharpening pass after FSR 1. Off keeps the EASU result without RCAS.", false},
+    {"upscale_sharpness", "RCAS sharpness", {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"}, 9,
+     "0 is softest, 10 strongest. 9 preserves upstream's 0.2-stop RCAS default. Applies only to FSR 1 with RCAS on.", false},
     {"live_resolution", "Live resolution", {"Off", "On"}, 1,
      "GX rebuilds render targets when resolution changes. Off applies resolution at the next start; requires a restart.", true},
     // The follow camera's vertical field of view, LockCamParam's camFovY
@@ -247,6 +253,8 @@ const Row g_rows[] = {
     {Row::Option, nullptr, kCameraHeight},
     {Row::Header, "UPSCALING"},
     {Row::Option, nullptr, kUpscaler},
+    {Row::Option, nullptr, kUpscaleRcas},
+    {Row::Option, nullptr, kUpscaleSharpness},
     {Row::Header, "INPUT"},
     {Row::Option, nullptr, kMouseMenu},
     {Row::Option, nullptr, kMouseCamera},
@@ -719,6 +727,8 @@ void rebuild_settings() {
     }
     h.mouse_menu = on_of(kMouseMenu);
     h.spatial_upscale = index_of(kUpscaler) == 1;
+    h.upscale_rcas = index_of(kUpscaleRcas) == 1;
+    h.upscale_sharpness_stops = 2.0f - 0.2f * static_cast<float>(index_of(kUpscaleSharpness));
     h.live_resolution = index_of(kLiveResolution) == 1;
     h.mouse_camera = on_of(kMouseCamera);
     {

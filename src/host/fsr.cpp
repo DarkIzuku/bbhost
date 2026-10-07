@@ -9,7 +9,6 @@
 // else into an image of the output size and a 1:1 blit from it (BBHOST_FSR_DIRECT=0
 // always does that). BBHOST_UPSCALE=linear keeps the bilinear blit.
 #include "host/gpu_internal.h"
-#include "host/settings.h"
 #include "host/shaders/fsr_easu.spv.h"
 #include "host/shaders/fsr_easu_h.spv.h"
 #include "host/shaders/fsr_rcas.spv.h"
@@ -43,8 +42,6 @@
 namespace gpu {
 namespace {
 
-// RCAS strength in stops below its maximum (AMD's samples use 0.2).
-constexpr float kSharpness = 0.2f;
 
 struct Target {
     VkImage image = VK_NULL_HANDLE;
@@ -72,10 +69,6 @@ struct Fsr {
     double total_us = 0;
 } g_fsr;
 
-bool wanted() {
-    const char* e = std::getenv("BBHOST_UPSCALE");
-    return e && *e ? std::strcmp(e, "linear") != 0 : host_settings().spatial_upscale;
-}
 
 VkPipeline make_pipeline(const std::uint32_t* code, std::size_t bytes) {
     VkShaderModuleCreateInfo smi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
@@ -237,8 +230,8 @@ void image_barrier(VkCommandBuffer cmd, VkImage image, VkImageLayout from, VkIma
 // buffer, recorded after its fence, so last frame's sets and images are free.
 bool fsr_upscale_locked(VkCommandBuffer cmd, VkImage src, VkFormat src_format, std::uint32_t src_w, std::uint32_t src_h,
                         std::uint32_t src_x, std::uint32_t src_y, std::uint32_t sw, std::uint32_t sh, VkImage dst, VkRect2D area,
-                        VkImageView dst_view) {
-    if (!wanted() || !sw || !sh || !area.extent.width || !area.extent.height) return false;
+                        VkImageView dst_view, float sharpness, bool sharpening) {
+    if (!sw || !sh || !area.extent.width || !area.extent.height) return false;
     if (!g_fsr.tried) {
         g_fsr.tried = true;
         g_fsr.ok = fsr_init_locked();
@@ -283,7 +276,7 @@ bool fsr_upscale_locked(VkCommandBuffer cmd, VkImage src, VkFormat src_format, s
     FsrEasuConOffset(easu, easu + 4, easu + 8, easu + 12, static_cast<AF1>(sw), static_cast<AF1>(sh), static_cast<AF1>(src_w),
                      static_cast<AF1>(src_h), static_cast<AF1>(w), static_cast<AF1>(h), static_cast<AF1>(src_x), static_cast<AF1>(src_y));
     AU1 rcas[8] = {};  // the constants, then where the result goes: x, y, width, height
-    FsrRcasCon(rcas, kSharpness);
+    FsrRcasCon(rcas, sharpness);
     rcas[4] = direct ? static_cast<AU1>(area.offset.x) : 0;
     rcas[5] = direct ? static_cast<AU1>(area.offset.y) : 0;
     rcas[6] = w;
@@ -306,6 +299,18 @@ bool fsr_upscale_locked(VkCommandBuffer cmd, VkImage src, VkFormat src_format, s
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g_fsr.layout, 0, 1, &g_fsr.easu_set, 0, nullptr);
     vkCmdPushConstants(cmd, g_fsr.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(easu), easu);
     vkCmdDispatch(cmd, groups_x, groups_y, 1);
+    if (!sharpening) {
+        image_barrier(cmd, g_fsr.upscaled.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_SHADER_WRITE_BIT,
+                      VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        VkImageBlit copy{};
+        copy.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}; copy.dstSubresource = copy.srcSubresource;
+        copy.srcOffsets[1] = {static_cast<std::int32_t>(w), static_cast<std::int32_t>(h), 1};
+        copy.dstOffsets[0] = {area.offset.x, area.offset.y, 0};
+        copy.dstOffsets[1] = {area.offset.x + static_cast<std::int32_t>(w), area.offset.y + static_cast<std::int32_t>(h), 1};
+        vkCmdBlitImage(cmd, g_fsr.upscaled.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy, VK_FILTER_NEAREST);
+        if (g_fsr.queries) vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, g_fsr.queries, 1);
+        return true;
+    }
     image_barrier(cmd, g_fsr.upscaled.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_WRITE_BIT,
                   VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
     if (direct) {

@@ -37,6 +37,7 @@ run() {
 }
 run sysv_va_test tests/sysv_va_test.cpp src/hle/sysv_va.cpp
 run game_installation_test tests/game_installation_test.cpp src/core/game_installation.cpp src/core/sfo.cpp src/core/sha256.cpp
+run upscale_policy_test tests/upscale_policy_test.cpp src/host/upscale_policy.cpp
 run thunk_args tests/thunk_args.cpp src/core/thunk.cpp src/core/tls_rewrite.cpp src/core/portable.cpp src/hle/sysv_va.cpp src/host/main_wait.cpp
 wineserver -k 2>/dev/null
 exit $fail

@@ -8,6 +8,8 @@
 #include "engine/gx_state.h"
 #include "host/gpu_internal.h"
 #include "host/shader_patch.h"
+#include "host/upscaler.h"
+#include "host/settings.h"
 
 #include "host/draw_capture.h"
 #include "gcn/container.h"
@@ -7443,20 +7445,21 @@ bool render_blit_display_locked(VkCommandBuffer cmd, std::uint64_t display_va, V
     const std::uint32_t x0 = std::min(src_x, r.width), y0 = std::min(src_y, r.height);
     const std::uint32_t sw = src.width && x0 + src.width <= r.width ? src.width : r.width - x0;
     const std::uint32_t sh = src.height && y0 + src.height <= r.height ? src.height : r.height - y0;
-    // Smaller than the window (a lower render size, the Deck's 960x600): FSR 1
-    // rather than a bilinear stretch (host/fsr.cpp).
-    if (sw <= area.extent.width && sh <= area.extent.height && (sw < area.extent.width || sh < area.extent.height) &&
-        fsr_upscale_locked(cmd, r.image, r.format, r.width, r.height, x0, y0, sw, sh, dst, area, dst_view))
-        return true;
-    VkImageBlit blit{};
-    blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    blit.srcOffsets[0] = {static_cast<int32_t>(x0), static_cast<int32_t>(y0), 0};
-    blit.srcOffsets[1] = {static_cast<int32_t>(x0 + sw), static_cast<int32_t>(y0 + sh), 1};
-    blit.dstSubresource = blit.srcSubresource;
-    blit.dstOffsets[0] = {area.offset.x, area.offset.y, 0};
-    blit.dstOffsets[1] = {area.offset.x + static_cast<int32_t>(area.extent.width), area.offset.y + static_cast<int32_t>(area.extent.height), 1};
-    vkCmdBlitImage(cmd, r.image, VK_IMAGE_LAYOUT_GENERAL, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
-    return true;
+    UpscaleConfig config;
+    config.provider = upscale_selected(); config.render = {sw, sh};
+    const auto settings = host_settings();
+    config.output = {area.extent.width, area.extent.height}; config.fullscreen = settings.fullscreen;
+    config.sharpness = settings.upscale_sharpness_stops; config.sharpening = settings.upscale_rcas;
+    UpscaleFrame frame;
+    frame.commands = cmd;
+    frame.color = {r.image, VK_NULL_HANDLE, r.format, VK_IMAGE_LAYOUT_GENERAL, {r.width, r.height}};
+    frame.output = {dst, dst_view, VK_FORMAT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, config.output};
+    frame.input_area = {{static_cast<std::int32_t>(x0), static_cast<std::int32_t>(y0)}, {sw, sh}};
+    frame.output_area = area;
+    // This is upstream's spatial presentation path, AFTER Scaleform. A
+    // temporal provider must be inserted at a verified engine scene boundary.
+    frame.stage = UpscaleStage::CompositePresentation;
+    return upscale_record_locked(config, frame);
 }
 
 void render_pipeline_time_us(std::uint64_t out[5]) {
