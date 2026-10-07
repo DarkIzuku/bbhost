@@ -5,6 +5,7 @@
 #include "core/memory.h"
 #include "core/portable.h"
 #include "engine/addr.h"
+#include "gcn/container.h"
 #include "hle/fs.h"
 #include "host/settings.h"
 #include "log.h"
@@ -13,6 +14,9 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <map>
 #include <string>
 #include <vector>
@@ -180,6 +184,39 @@ std::vector<std::string> manifest_dirs(const std::string& mods) {
     return dirs;
 }
 
+// Whether a texture pack (a TPF, inflated) names a texture: its name table
+// holds each name NUL-terminated, in UTF-16 or in single bytes.
+bool tpf_names(const std::vector<std::uint8_t>& tpf, const std::string& name) {
+    std::vector<std::uint8_t> wide, narrow(name.begin(), name.end());
+    for (const char c : name) wide.insert(wide.end(), {static_cast<std::uint8_t>(c), 0});
+    wide.insert(wide.end(), {0, 0});
+    narrow.push_back(0);
+    return std::search(tpf.begin(), tpf.end(), wide.begin(), wide.end()) != tpf.end() ||
+           std::search(tpf.begin(), tpf.end(), narrow.begin(), narrow.end()) != tpf.end();
+}
+
+// The Old Hunters edition looks for the DLC's own files, which came with the
+// update that brought it (1.07), so a game folder holding the base game's
+// versions has none of them: the edition's title art, MENU_Title_00004 in
+// menu/title.tpf.dcx - without it the title movie fills its picture flat
+// green (a player's game folder, 2026-10-07) - and the three areas' maps.
+// What is missing, or "" when it is all there; read as the game will read it,
+// update folder and mods included.
+std::string old_hunters_missing() {
+    const std::string pack = hle_fs_map_path("/app0/dvdroot_ps4/menu/title.tpf.dcx");
+    std::ifstream in(pack, std::ios::binary);
+    if (!in) return "menu/title.tpf.dcx";
+    const std::vector<std::uint8_t> raw((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const std::vector<std::uint8_t> tpf = gcn::dcx_decompress(raw);
+    if (!tpf_names(tpf.empty() ? raw : tpf, "MENU_Title_00004")) return "Old Hunters title art (MENU_Title_00004 in menu/title.tpf.dcx)";
+    for (const char* map : {"m33_00_00_00", "m34_00_00_00", "m35_00_00_00"}) {
+        std::error_code ec;
+        if (!std::filesystem::is_directory(hle_fs_map_path(("/app0/dvdroot_ps4/map/" + std::string(map)).c_str()), ec))
+            return std::string("map/") + map + " (an Old Hunters area)";
+    }
+    return {};
+}
+
 // By file name, a later directory's file replacing an earlier one's.
 std::map<std::string, std::string> manifest_files(const std::vector<std::string>& dirs) {
     std::map<std::string, std::string> files;
@@ -272,6 +309,16 @@ void patch_manifests_apply(ElfImage* image) {
                 continue;
             }
             if (!on) continue;
+        }
+        if (m.name == "old-hunters") {
+            if (const std::string missing = old_hunters_missing(); !missing.empty()) {
+                host_log("patch: old-hunters skipped - the game folder has no %s. Its files are older than the 1.09 "
+                         "update's, which bring The Old Hunters: copy the update's files over the game folder, replacing "
+                         "the ones there (or keep them in a CUSA00900-UPDATE folder beside it). The game stays the edition "
+                         "without it.",
+                         missing.c_str());
+                continue;
+            }
         }
         apply(image, m);
     }

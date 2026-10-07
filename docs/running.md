@@ -84,6 +84,16 @@ most useful with that log attached.
 **The eboot is refused.** It is not the 1.09 build. Use the update's
 `eboot.bin`, decrypted; the message says what the dump's `param.sfo` reports.
 
+**The game stops at start in `FileTransferTask.cpp(865)`, or the log says
+`patch: old-hunters skipped`.** The game folder holds files older than the
+1.09 update's: the update was never copied over it, or only its new files were
+(Windows' "Skip these files" when it asks about the ones already there). The
+log's `change appearance: off - not the 1.09 m21_00_00_00 layout` says the
+same. Copy the update's files over the game folder again, replacing the ones
+there, or keep the update in a `-UPDATE` folder beside it (above). Until The
+Old Hunters' own files are there, bbhost leaves the game as the edition
+without it: its title screen would otherwise be a flat green picture.
+
 **The graphics card stops responding.** When the GPU hangs and the system
 resets it, nothing can be drawn again in that session; bbhost stops the sound,
 says so in a box and exits. The next three starts run with the GPU's progress

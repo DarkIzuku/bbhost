@@ -17,7 +17,10 @@
 #
 # A patch like any other, on unless turned off: the setup window's Patches
 # tab, or `old-hunters = false` under [patches] in bbhost.toml; it applies at
-# the next start. (In v0.2.9 it was a PC enhancement, `old_hunters` under
+# the next start. bbhost leaves it off, saying why in the log, when the game
+# files lack the DLC's own (its title art, MENU_Title_00004, and its three
+# areas): files older than the 1.09 update's, whose title would be a flat
+# green picture (engine/patch_manifest.cpp, old_hunters_missing). (In v0.2.9 it was a PC enhancement, `old_hunters` under
 # [world]; a file that turned it off there still does.)
 [patch]
 name = "old-hunters"
