@@ -108,6 +108,7 @@ add_executable(bbhost
   src/host/overlay.cpp
   src/host/ingame_menu.cpp
   src/host/options.cpp
+  src/host/launcher_bridge.cpp
   src/host/updater.cpp
   src/host/update_verify.cpp
   src/host/bindings.cpp

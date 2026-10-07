@@ -2,6 +2,7 @@
 
 #include "bbhost_version.h"
 #include "core/sha256.h"
+#include "core/game_installation.h"
 #include "engine/addr.h"
 #include "engine/patch_manifest.h"
 #include "host/options.h"
@@ -108,7 +109,7 @@ EbootCheck check_eboot(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
     std::vector<std::uint8_t> data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     c.sha = sha256_hex(data.data(), data.size());
-    c.ok = c.sha == kEboot109Sha256;
+    c.ok = eboot_is_109(c.sha);
     return c;
 }
 
@@ -410,7 +411,7 @@ LauncherResult launcher_run(const HostConfig& cfg, const std::string& reason, bo
                 if (patch_rows.empty()) ImGui::TextDisabled("No patches found.");
                 for (std::size_t i = 0; i < patch_rows.size(); ++i) {
                     PatchRow& r = patch_rows[i];
-                    const bool other_eboot = eboot.ok && !r.p.eboot.empty() && r.p.eboot != eboot.sha;
+                    const bool other_eboot = eboot.ok && !r.p.eboot.empty() && !eboot_hashes_compatible(r.p.eboot, eboot.sha);
                     const bool unknown_option = !r.p.option.empty() && !patch_manifest_option_known(r.p.option);
                     const bool fixed = !r.p.error.empty() || !r.p.enabled || other_eboot || unknown_option ||
                                        (r.p.option.empty() && !bare_key(r.p.name));
@@ -439,7 +440,7 @@ LauncherResult launcher_run(const HostConfig& cfg, const std::string& reason, bo
                 if (!patch_rows.empty()) {
                     auto set_all = [&](bool v) {
                         for (PatchRow& r : patch_rows) {
-                            const bool other_eboot = eboot.ok && !r.p.eboot.empty() && r.p.eboot != eboot.sha;
+                            const bool other_eboot = eboot.ok && !r.p.eboot.empty() && !eboot_hashes_compatible(r.p.eboot, eboot.sha);
                             if (!r.p.error.empty() || !r.p.enabled || other_eboot) continue;
                             if (!r.p.option.empty() && !patch_manifest_option_known(r.p.option)) continue;
                             if (r.p.option.empty() && !bare_key(r.p.name)) continue;
@@ -491,14 +492,18 @@ LauncherResult launcher_run(const HostConfig& cfg, const std::string& reason, bo
                     : is_dir(app0 + "/../dvdroot_ps4") || fs::path(app0).filename() == "dvdroot_ps4"
                                            ? "pick the folder above dvdroot_ps4, not dvdroot_ps4 itself"
                                            : "no dvdroot_ps4 in it");
-        if (path_row("Eboot (the 1.09 update's eboot.bin, decrypted)", kEboot, false, "C:/Games/Bloodborne/eboot-109-decrypted.bin") ||
-            (eboot.path != f[kEboot].str() && !ImGui::IsAnyItemActive())) {
+        static std::string last_game, last_data, preparation_error;
+        const std::string prepare_data = f[kData].str().empty() ? config_default_data_dir() : f[kData].str();
+        if ((last_game != f[kApp0].str() || last_data != prepare_data) && !ImGui::IsAnyItemActive()) {
+            last_game = f[kApp0].str(); last_data = prepare_data;
+            const GameInstallation prepared = game_prepare(last_game, prepare_data);
+            preparation_error = prepared.error;
+            if (prepared.ok) f[kApp0].set(prepared.app0);
+            last_game = f[kApp0].str();
+            f[kEboot].set(prepared.ok ? prepared.eboot : "");
             eboot = check_eboot(f[kEboot].str());
         }
-        status_line(eboot.ok, "the 1.09 eboot",
-                    f[kEboot].str().empty() ? "not set"
-                    : !is_file(f[kEboot].str()) ? "that file does not exist"
-                                                : "not the 1.09 eboot (SHA-256 " + eboot.sha.substr(0, 16) + "...)");
+        status_line(eboot.ok, "Bloodborne 1.09 validated and ready", preparation_error);
         path_row("Data folder (saves and caches; empty for the default)", kData, true, config_default_data_dir().c_str());
 
         ImGui::SeparatorText("Online");

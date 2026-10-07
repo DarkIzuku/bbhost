@@ -5,6 +5,8 @@
 #include "core/portable.h"
 #include "core/thunk.h"
 #include "core/elf.h"
+#include "core/game_installation.h"
+#include "host/launcher_bridge.h"
 #include "core/imports.h"
 #include "core/win_watch.h"
 #include "core/write_watch.h"
@@ -792,6 +794,8 @@ void hle_watch_report() {}
 #endif
 
 int main(int argc, char** argv) {
+    int bridge_result = 0;
+    if (launcher_bridge_command(argc, argv, &bridge_result)) return bridge_result;
 #if defined(_WIN32)
     hle_kernel_reserve_guest_windows();  // before anything else can take those addresses
     write_watch_install();               // the vectored handler for write-protected texture memory
@@ -836,6 +840,20 @@ int main(int argc, char** argv) {
                  argv[0]);
         host_log("docs/running.md: where the configuration is looked for and what to put in it");
         return 2;
+    }
+    // A single game-folder selection also works without the WPF frontend.
+    // Explicit legacy ELF paths remain accepted by the existing loader.
+    if (!cfg.app0.empty() && (cfg.eboot.empty() || cfg.eboot == cfg.app0 + "/eboot.bin")) {
+        const GameInstallation prepared = game_prepare(cfg.app0, cfg.data);
+        if (prepared.ok) {
+            cfg.app0 = prepared.app0;
+            cfg.eboot = prepared.eboot;
+            config_set_game_paths(cfg.app0, cfg.eboot);
+            host_log("game: verified %s %s; executable %s", prepared.title_id.c_str(), prepared.version.c_str(),
+                     prepared.prepared ? "prepared automatically in the data cache" : "found in the game folder");
+        } else {
+            host_log("game: %s", prepared.error.c_str());
+        }
     }
 #if defined(BBHOST_HAVE_SDL3)
     {
@@ -911,7 +929,7 @@ int main(int argc, char** argv) {
     // eboot of another version (2026-09-29) died before its first frame, on a
     // path pointer of 0xffffffff in the file layer. BBHOST_ANY_EBOOT=1 starts one
     // anyway, without the patches.
-    if (image.sha256 != kEboot109Sha256) {
+    if (!eboot_is_109(image.sha256)) {
         const char* any = std::getenv("BBHOST_ANY_EBOOT");
         if (!(any && any[0] == '1')) {
             std::fputs(config_eboot_help(cfg, image.sha256, kEboot109Sha256).c_str(), stderr);

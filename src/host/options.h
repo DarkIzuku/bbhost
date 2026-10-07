@@ -12,6 +12,17 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
+
+// External frontends consume the actual settings table, not a second schema.
+struct HostOptionInfo {
+    std::string key, label, section, note;
+    std::vector<std::string> values;
+    int index = 0;
+    bool restart = false;
+};
+std::vector<HostOptionInfo> host_options_describe();
+std::string host_options_file();
 
 // Reads the saved settings and applies the ones that take effect at startup.
 // Safe to call before the window exists.

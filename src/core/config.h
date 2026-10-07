@@ -85,6 +85,7 @@ struct HostConfig {
 // that was explicitly requested).
 bool config_load(int argc, char** argv, HostConfig* out, std::string* error);
 const HostConfig& config();
+void config_set_game_paths(const std::string& app0, const std::string& eboot);
 // The options screen (host/options.h) owns this one once it has read its own
 // file; the loader reads config().skip_intro after that.
 void config_set_skip_intro(bool on);

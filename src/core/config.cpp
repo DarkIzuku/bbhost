@@ -696,6 +696,10 @@ bool config_load(int argc, char** argv, HostConfig* out, std::string* error) {
 }
 
 const HostConfig& config() { return g_cfg; }
+void config_set_game_paths(const std::string& app0, const std::string& eboot) {
+    g_cfg.app0 = app0;
+    g_cfg.eboot = eboot;
+}
 
 std::string config_setup_help(const HostConfig& c) {
     std::string out;

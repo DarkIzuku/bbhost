@@ -1517,3 +1517,21 @@ std::string host_account_outcome() {
 }
 std::string host_account_detail() { return account_detail(); }
 bool host_account_take_save() { return g_acct_save.exchange(false); }
+
+std::string host_options_file() { return options_path(); }
+
+std::vector<HostOptionInfo> host_options_describe() {
+    std::vector<HostOptionInfo> result;
+    std::string section;
+    for (const Row& row : g_rows) {
+        if (row.kind == Row::Header) section = row.text;
+        if (row.kind != Row::Option) continue;
+        const Setting& s = g_set[row.setting];
+        HostOptionInfo o;
+        o.key = s.key; o.label = s.label; o.section = section;
+        o.note = s.note ? s.note : ""; o.index = s.index; o.restart = s.restart;
+        for (const char* v : s.values) o.values.emplace_back(v);
+        result.push_back(std::move(o));
+    }
+    return result;
+}
