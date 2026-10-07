@@ -43,8 +43,10 @@ public:
 NativeProvider native;
 Fsr1Provider fsr1;
 UpscaleHistory history;
+UpscalerProvider* temporal_provider = nullptr;
 bool warned_missing = false;
 UpscalerProvider* provider(UpscalerId id) {
+    if (temporal_provider && temporal_provider->id() == id) return temporal_provider;
     for (UpscalerProvider* p : {static_cast<UpscalerProvider*>(&native), static_cast<UpscalerProvider*>(&fsr1)}) if (p->id() == id) return p;
     return nullptr;
 }
@@ -76,4 +78,8 @@ bool upscale_record_locked(const UpscaleConfig& config, UpscaleFrame frame) {
     return true;
 }
 void upscale_invalidate_locked(HistoryReset why) { history.invalidate(why); }
+void upscale_set_temporal_provider_locked(UpscalerProvider* p) {
+    temporal_provider = p && p->temporal() ? p : nullptr;
+    history.invalidate(HistoryReset::Provider);
+}
 }  // namespace gpu

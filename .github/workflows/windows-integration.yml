@@ -30,6 +30,12 @@ jobs:
         run: CI_PACMAN=1 tools/ci_windows.sh
       - name: Test Windows ABI under Wine
         run: tools/win_tests.sh
+      - name: Build DLSS backend diagnostics and resource contract test
+        run: |
+          cmake --build build-win --target dlss_probe dlss_contract_test
+          mkdir -p build/win/dlss-diagnostics
+          cp build-win/dlss_probe.exe build-win/dlss_contract_test.exe build/win/dlss-diagnostics/
+          zip -j build/win/dlss-diagnostics.zip build/win/dlss-diagnostics/*.exe
       - name: Record exact build provenance
         run: python tools/write_build_info.py build/win/build-info.json
       - uses: actions/upload-artifact@v4

@@ -16,7 +16,8 @@ struct UpscaleFrame {
     VkRect2D input_area{}, output_area{};
     UpscaleStage stage = UpscaleStage::CompositePresentation;
     TemporalSample jitter;
-    float exposure = 1, delta_seconds = 0;
+    float exposure = 1, pre_exposure = 1, delta_seconds = 0;
+    bool depth_inverted = false;
     bool engine_jitter_applied = false;
     HistoryReset reset = HistoryReset::None;
 };
@@ -37,4 +38,8 @@ public:
 bool upscale_record_locked(const UpscaleConfig&, UpscaleFrame frame);
 UpscalerId upscale_selected();
 void upscale_invalidate_locked(HistoryReset why);
+// Engine scene integration owns the provider and its queue-fence retirement.
+// Install/remove only under Gpu::mu; removal precedes provider destruction.
+// Temporal dispatch remains prohibited at the composited presentation stage.
+void upscale_set_temporal_provider_locked(UpscalerProvider* provider);
 }  // namespace gpu
