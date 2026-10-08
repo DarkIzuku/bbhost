@@ -30,7 +30,14 @@ public sealed class SessionRunner
             info.CreateNoWindow = !console;
             // A user's old environment must never bypass the new compatibility gate.
             info.Environment.Remove("BBHOST_ANY_EBOOT");
-            if (detailed) { info.Environment["BBHOST_GPU_PROFILE"] = "1"; info.Environment["BBHOST_AUDIO_STATS"] = "1"; }
+            if (detailed) {
+                info.Environment["BBHOST_GPU_PROFILE"] = "1";
+                info.Environment["BBHOST_AUDIO_STATS"] = "1";
+                // Native per-second counters distinguish CPU waits, streaming
+                // and shader work. No frame readbacks or capture are enabled.
+                info.Environment["BBHOST_FRAME_STATS"] = "1";
+                info.Environment["BBHOST_STALL_MS"] = "40";
+            }
             using var process = Process.Start(info) ?? throw new IOException("No se pudo iniciar Bloodborne.");
             started?.Invoke();
             var gate = new SemaphoreSlim(1, 1);

@@ -48,7 +48,10 @@ static class Program
             }, JsonOptions)); return 0;
         }
         // A crashing fake child with both output pipes active tests supervision.
-        Thread.Sleep(600); Console.Out.WriteLine(new string('o', 80000)); Console.Error.WriteLine("fixture crash reason"); Thread.Sleep(200); return 3;
+        Thread.Sleep(600); Console.Out.WriteLine(new string('o', 80000)); Console.Error.WriteLine("fixture crash reason");
+        Console.WriteLine("fixture frame stats=" + Environment.GetEnvironmentVariable("BBHOST_FRAME_STATS"));
+        Console.WriteLine("fixture stall threshold=" + Environment.GetEnvironmentVariable("BBHOST_STALL_MS"));
+        Thread.Sleep(200); return 3;
     }
     [STAThread] static int Main(string[] args) {
         if (args.Length == 4 && args[0] == "integration") {
@@ -160,11 +163,13 @@ static class Program
             var button = nav.Children.OfType<Button>().First(x => (string)x.CommandParameter == page); Call(window, "Nav_Click", button, new RoutedEventArgs());
             Render(window, Path.Combine(preview, "launcher-" + page.ToLowerInvariant() + ".png"), 1200, 760);
         }
+        Find<CheckBox>(window, "DetailedLogsCheck").IsChecked = true;
         Call(window, "Play_Click", window, new RoutedEventArgs());
         Until(() => !window.IsVisible, "launcher disappears after game process starts"); Check(!window.IsVisible, "launcher hidden during session");
         Until(() => window.IsVisible && Find<Button>(window, "PlayButton").IsEnabled, "launcher reopens after child crash"); Check(window.IsVisible, "launcher restored after child crash");
         string log = File.ReadAllText(Directory.GetFiles(Path.Combine(root, "logs"), "bbhost-*.log").Single());
         Check(log.Contains("fixture crash reason") && log.Contains("Exit code: 3") && !log.Contains("fixture-token-must-survive"), "crash logs preserved without account token");
+        Check(log.Contains("fixture frame stats=1") && log.Contains("fixture stall threshold=40"), "detailed logs request native frame and stall counters from the child");
         window.Close();
     }
 }
