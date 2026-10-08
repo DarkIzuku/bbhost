@@ -1974,6 +1974,7 @@ bool scene_draw_prepare_locked(const GpuDraw& d,const DrawState& s,const KeyStag
         for(auto r:reads) {char b[64];std::snprintf(b,sizeof(b)," 0x%llx:%s",static_cast<unsigned long long>(r),frame.graph.scene_owned(r)?"scene":frame.graph.ui_owned(r)?"UI":"unknown");trace+=b;}
         host_log("temporal-path: frame=%llu kind=%s full=%u dest=0x%llx:%s reads=%s",static_cast<unsigned long long>(flip),d.gx_token_kind,full?1u:0u,
             static_cast<unsigned long long>(s.color[0]?s.color[0]->base:0),s.color[0] && frame.graph.scene_owned(s.color[0]->base)?"scene":s.color[0] && frame.graph.ui_owned(s.color[0]->base)?"UI":"unknown",trace.c_str());
+        host_log("temporal-size: viewport=%.0fx%.0f target=%ux%u render=%ux%u output=%ux%u",std::fabs(s.vport[0]*2),std::fabs(s.vport[2]*2),s.color[0]?s.color[0]->width:0,s.color[0]?s.color[0]->height:0,frame.extent.width,frame.extent.height,frame.config.output.width,frame.config.output.height);
     }
     // Fullscreen post quads replace the active picture. Incremental
     // geometry and blending must retain destination provenance.
