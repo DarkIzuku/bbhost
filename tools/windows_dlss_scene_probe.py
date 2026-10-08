@@ -30,6 +30,7 @@ def main():
     p.add_argument('--capture-flips', default='', help='Comma-separated presentation flips')
     p.add_argument('--draw-list', type=int, default=0, help='Diagnostic native draw list at capture flips; alters timing')
     p.add_argument('--dump-at-draw', default='', help='Native intermediate target readback: pipeline:occurrence:min-flip')
+    p.add_argument('--capture-draw', default='', help='Isolated Vulkan draw capture: pipeline:min-flip (alters timing)')
     p.add_argument('--resize-test', default='', help='Native quiet-point resize hook: flip:WIDTHxHEIGHT[,..]')
     p.add_argument('--scene-dlaa', action='store_true', help='Experimental pre-UI DLAA diagnostic')
     p.add_argument('--preset', choices=['DLAA','Quality','Balanced','Performance','Ultra Performance'], default='DLAA')
@@ -47,6 +48,8 @@ def main():
         raise ValueError('Invalid native resize test sequence')
     if args.dump_at_draw and not re.fullmatch(r'[a-f0-9]+(?:\+[a-f0-9]+)?:\d+:\d+', args.dump_at_draw):
         raise ValueError('Invalid native pipeline readback selector')
+    if args.capture_draw and not re.fullmatch(r'[a-f0-9]+(?:\+[a-f0-9]+)?:\d+', args.capture_draw):
+        raise ValueError('Invalid native draw capture selector')
     if args.scene_dlaa and (not args.model_dir or not args.model_dir.is_dir()):
         raise ValueError('DLAA requires the local model directory')
     for protected in (runtime, game, seed, args.cache_source, args.model_dir):
@@ -92,6 +95,10 @@ def main():
         env['BBHOST_RESIZE_TEST'] = args.resize_test
     if args.dump_at_draw:
         env['BBHOST_DUMP_AT_DRAW'] = args.dump_at_draw
+    if args.capture_draw:
+        pipeline, first_flip = args.capture_draw.split(':')
+        env.update(BBHOST_CAPTURE_DRAW=pipeline, BBHOST_CAPTURE_MIN_FLIP=first_flip,
+                   BBHOST_CAPTURE_DIR=str(root/'draw-captures'), BBHOST_CAPTURE_COUNT='1')
     if args.single_present_queue:
         env['BBHOST_PRESENT_QUEUE'] = '0'
     elif args.separate_present_queue:

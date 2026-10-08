@@ -102,8 +102,8 @@ bool scene_resolve_locked(UpscalerProvider& provider,const SceneCamera& camera,s
     inputs.reset=history.begin(config);
     if(!provider.supports(config,inputs) || !provider.record(config,inputs)) {history.invalidate(HistoryReset::BackendFailure);cameras.clear();return false;}
     dependency(commands,VK_ACCESS_SHADER_WRITE_BIT,VK_ACCESS_TRANSFER_READ_BIT|VK_ACCESS_TRANSFER_WRITE_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT);
-    VkImageCopy copy{};copy.srcSubresource=copy.dstSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};copy.extent={extent.width,extent.height,1};
-    if(config.output==extent) {
+    VkImageCopy copy{};copy.srcSubresource=copy.dstSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};copy.extent={config.output.width,config.output.height,1};
+    if(color.width>=config.output.width && color.height>=config.output.height) {
         vkCmdCopyImage(commands,output.image.image,VK_IMAGE_LAYOUT_GENERAL,color.image,VK_IMAGE_LAYOUT_GENERAL,1,&copy);
         resolved_source=0;
     } else {resolved_source=color.base;resolved_frame=frame;}

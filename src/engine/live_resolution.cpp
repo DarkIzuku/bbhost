@@ -16,6 +16,7 @@
 #include "log.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -24,6 +25,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <map>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -79,6 +81,7 @@ constexpr std::uint32_t kMaxW = 5120, kMaxH = 2160;
 
 std::uint64_t g_slide = 0;
 bool g_installed = false;
+std::atomic<std::uint64_t> g_scene_resize_output{0};
 const std::uint64_t* g_device_slot = nullptr;
 const std::uint64_t* g_manager_slot = nullptr;
 const std::uint32_t* g_res_words = nullptr;
@@ -287,6 +290,9 @@ std::vector<std::uint64_t> live_scene_ctxs() {
 int resize_scene_ctxs(std::uint64_t dev, std::uint64_t gm, const std::vector<std::uint64_t>& before, std::uint32_t ow, std::uint32_t oh,
                       std::uint32_t w, std::uint32_t h) {
     if (g_ctx_untracked) return 0;
+    unsigned render_ow=ow,render_oh=oh,render_w=w,render_h=h;
+    host_gpu_scene_size(ow,oh,&render_ow,&render_oh);
+    host_gpu_scene_size(w,h,&render_w,&render_h);
     const std::uint64_t list = at_<std::uint64_t>(dev + 0x5f8);
     std::vector<std::uint64_t> ctxs;
     for (std::uint64_t c : live_scene_ctxs())
@@ -300,6 +306,9 @@ int resize_scene_ctxs(std::uint64_t dev, std::uint64_t gm, const std::vector<std
         if (reg) continue;  // its own resize slot runs in the broadcast
         const std::uint32_t cw = at_<std::uint32_t>(c + 0x18), ch = at_<std::uint32_t>(c + 0x1c);
         int shift = -1;
+        bool temporal=false;
+        for(int k=0;k<=2 && shift<0;++k)
+            if(cw==(render_ow>>k) && ch==(render_oh>>k)) {shift=k;temporal=true;}
         for (int k = 0; k <= 2 && shift < 0; ++k)
             if (cw == (ow >> k) && ch == (oh >> k)) shift = k;
         if (shift < 0) continue;  // a fixed size of its own
@@ -308,7 +317,7 @@ int resize_scene_ctxs(std::uint64_t dev, std::uint64_t gm, const std::vector<std
         at_<std::uint8_t>(c + 0x58) = 1;
         alignas(16) std::uint8_t desc[0x40];
         std::memcpy(desc, reinterpret_cast<const void*>(static_cast<std::uintptr_t>(c + 0x18)), sizeof(desc));
-        const std::uint32_t nw = w >> shift, nh = h >> shift;
+        const std::uint32_t nw = (temporal?render_w:w) >> shift, nh = (temporal?render_h:h) >> shift;
         std::memcpy(desc, &nw, 4);
         std::memcpy(desc + 4, &nh, 4);
         hle_call_guest6(guest_fn(kSceneCtxReinit), static_cast<std::int64_t>(c), static_cast<std::int64_t>(reinterpret_cast<std::uintptr_t>(desc)),
@@ -656,19 +665,34 @@ bool install_scene_target_size_check() {
 GUEST_ABI std::int64_t scene_initialize_hook(std::uint64_t,const std::uint64_t* saved) {
     const auto ctx=saved[5],desc=saved[4],gm=saved[3];
     if(!gm || !desc) return 0;
+    // The manager's primary context owns the native final-color surface used
+    // by its post/Scaleform chain (+0x1a8). World contexts borrow that surface
+    // through Initialize's forced-target flag while sizing their G-buffers
+    // independently. Replacing the primary surface left the later copy reading
+    // the manager's old, unwritten native-sized color allocation.
+    if(ctx==gm+0x60) return 0;
     const auto ow=at_<std::uint32_t>(desc),oh=at_<std::uint32_t>(desc+4);
-    const auto current=g_current.load();
+    const auto resizing=g_scene_resize_output.load();
+    const auto current=resizing?resizing:g_current.load();
     const auto output_w=current?static_cast<unsigned>(current>>32):g_res_words[0];
     const auto output_h=current?static_cast<unsigned>(current):g_res_words[1];
     if(ow!=output_w || oh!=output_h) return 0;
     unsigned rw=ow,rh=oh;
     if(!host_gpu_scene_size(ow,oh,&rw,&rh) || (rw==ow && rh==oh)) return 0;
-    alignas(32) static thread_local std::uint8_t scene_desc[0x40];
-    std::memcpy(scene_desc,reinterpret_cast<const void*>(static_cast<std::uintptr_t>(desc)),sizeof(scene_desc));
-    std::memcpy(scene_desc,&rw,4);std::memcpy(scene_desc+4,&rh,4);
-    const_cast<std::uint64_t*>(saved)[4]=reinterpret_cast<std::uintptr_t>(scene_desc);
+    // Stable per-context storage also survives nested child Initialize calls.
+    // Rehashing/reusing one thread-local scratch could change a parent's desc.
+    struct Description {alignas(32) std::array<std::uint8_t,0x40> bytes;};
+    static thread_local std::map<std::uint64_t,Description> descriptions;
+    auto& scene_desc=descriptions[ctx].bytes;
+    std::memcpy(scene_desc.data(),reinterpret_cast<const void*>(static_cast<std::uintptr_t>(desc)),scene_desc.size());
+    std::memcpy(scene_desc.data(),&rw,4);std::memcpy(scene_desc.data()+4,&rh,4);
+    const_cast<std::uint64_t*>(saved)[4]=reinterpret_cast<std::uintptr_t>(scene_desc.data());
     host_log("DLSS: GX %s scene %ux%u -> %ux%u; native display/UI retained",ctx==gm+0x60?"primary":"world/menu",ow,oh,rw,rh);
     return 0;
+}
+bool install_scene_initialize_hook(ElfImage* image) {
+    static const std::uint8_t pro[] = {0x55,0x48,0x89,0xe5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x81,0xe4,0xe0,0xff,0xff,0xff};
+    return engine_prologue_hook(image,guest(0x26c39f0),pro,sizeof(pro),reinterpret_cast<void*>(&scene_initialize_hook));
 }
 
 // ---- DefDepthStencil at the render size -----------------------------------------
@@ -759,6 +783,7 @@ bool remake_default_depth(std::uint64_t out, std::uint32_t w, std::uint32_t h) {
 // rebuild from, DefDepthStencil and the rectangle binding the display buffers
 // sets; then the game's broadcast and the contexts it does not reach.
 int broadcast_size(std::uint64_t dev, std::uint64_t gm, std::uint32_t ow, std::uint32_t oh, std::uint32_t w, std::uint32_t h) {
+    g_scene_resize_output.store(pack(w,h));
     const std::uint64_t out = at_<std::uint64_t>(dev + 0x90);
     at_<std::uint32_t>(out + 0x80) = w;
     at_<std::uint32_t>(out + 0x84) = h;
@@ -770,7 +795,8 @@ int broadcast_size(std::uint64_t dev, std::uint64_t gm, std::uint32_t ow, std::u
     if (!remake_default_depth(out, w, h)) host_log("resolution: DefDepthStencil was not made at %ux%u; the scene keeps a depth of its own", w, h);
     const std::vector<std::uint64_t> before = live_scene_ctxs();
     hle_call_guest6(guest_fn(kResizeBroadcast), static_cast<std::int64_t>(dev), w, h, 0, 0, 0);
-    return resize_scene_ctxs(dev, gm, before, ow, oh, w, h);
+    const auto rebuilt=resize_scene_ctxs(dev,gm,before,ow,oh,w,h);
+    g_scene_resize_output.store(0);return rebuilt;
 }
 
 // False when nothing changed, or the size did not fit and the one before it
@@ -1098,6 +1124,12 @@ bool live_resolution_install(ElfImage* image) {
         host_log("resolution: live changes up to %.1f million pixels, the GPU's memory is tight (larger sizes apply at the next start)",
                  static_cast<double>(g_live_max_px) / 1e6);
     if (!live) {
+        const char* scene=std::getenv("BBHOST_DLSS_SCENE");
+        if(host_settings().upscaler==gpu::UpscalerId::Dlss || (scene && std::strcmp(scene,"1")==0)) {
+            g_res_words=static_cast<const std::uint32_t*>(guest_ptr(image->mem,guest(kResWidth)));
+            if(!install_scene_target_size_check() || !install_scene_initialize_hook(image))
+                host_log("DLSS: scene size hook unavailable with live resolution off");
+        }
         host_log("resolution: changes wait for the next run (BBHOST_LIVE_RESOLUTION=0)");
         return false;
     }
@@ -1134,8 +1166,7 @@ bool live_resolution_install(ElfImage* image) {
         return false;
     }
     host_log("resolution: scene target reuse requires matching width and height");
-    static const std::uint8_t scene_init_pro[] = {0x55,0x48,0x89,0xe5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x81,0xe4,0xe0,0xff,0xff,0xff};
-    if(!engine_prologue_hook(image,guest(0x26c39f0),scene_init_pro,sizeof(scene_init_pro),reinterpret_cast<void*>(&scene_initialize_hook)))
+    if(!install_scene_initialize_hook(image))
         host_log("DLSS: GX scene Initialize hook unavailable; temporal upscaling cannot change scene size");
     if (!pin_display_read(image, kGxInitWidthRead, kResWidth, g_display[0]) ||
         !pin_display_read(image, kGxInitHeightRead, kResHeight, g_display[1])) {

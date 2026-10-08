@@ -1953,8 +1953,16 @@ bool scene_draw_prepare_locked(const GpuDraw& d,const DrawState& s,const KeyStag
         if(base) reads.push_back(base);
     }
     for(const auto* color:s.color) if(color) writes.push_back(color->base);
-    const auto kind=std::strcmp(d.gx_token_kind,"scaleform")==0 ? ScenePassKind::Scaleform :
+    auto kind=std::strcmp(d.gx_token_kind,"scaleform")==0 ? ScenePassKind::Scaleform :
         std::strcmp(d.gx_token_kind,"yebis")==0 ? ScenePassKind::Yebis : ScenePassKind::Engine;
+    // The engine uses Scaleform's fullscreen copy for YEBIS's HDR input too.
+    // It contains no UI: a single pure-scene source, a float color destination,
+    // no depth/blending, and a full six-index rectangle. Preserve provenance
+    // through that copy; resolve only when the final color reaches the UI path.
+    if(kind==ScenePassKind::Scaleform && render_full && reads.size()==1 && writes.size()==1 &&
+       frame.graph.scene_owned(reads[0]) && !s.depth && !(s.blend[0]&(1u<<30)) && d.index_count==6 &&
+       s.color[0] && s.color_mask[0]==15 && (s.color[0]->format==VK_FORMAT_R16G16B16A16_SFLOAT ||
+       s.color[0]->format==VK_FORMAT_B10G11R11_UFLOAT_PACK32)) kind=ScenePassKind::Engine;
     if(g_temporal_graph_audit) {
         ++frame.draw_count;frame.full_count+=full;frame.reads_count+=reads.size();frame.ui_count+=kind==ScenePassKind::Scaleform;
         for(auto r:reads) frame.scene_reads+=frame.graph.scene_owned(r);
@@ -14646,9 +14654,9 @@ void stage_manifest_save_async(const std::string& path) {
 }  // namespace gpu
 
 void host_gpu_temporal_frame_end() {
-    static const bool requested=[] {const char* e=std::getenv("BBHOST_DLSS_SCENE");return e && std::strcmp(e,"1")==0;}();
-    if(!gpu::g_temporal_graph_audit && !requested) return;
     std::lock_guard<GpuMutex> lock(gpu::g.mu);
+    const bool requested=gpu::dlss_runtime_scene_locked()!=nullptr;
+    if(!gpu::g_temporal_graph_audit && !requested) return;
     const auto& frame=gpu::g_temporal_scene;
     if(requested && gpu::dlss_runtime_scene_locked() && !gpu::g_temporal_scene_failed && frame.flip==gpu::g_temporal_sequence && frame.raster_jittered && !frame.resolved) {
         gpu::g_temporal_scene_failed=true;
