@@ -1,11 +1,11 @@
 # DLSS backend integration
 
-Current priority from the user: **DLSS, then FSR 3.1, then FSR 4**. FSR 4.1.1
-and custom loading screens remain later stages. The NGX Vulkan backend is
-implemented and tested on actual hardware. **In-game DLSS is still not enabled**:
-the engine scene/depth/object-motion/jitter resolve has not been connected.
-Native-device initialization and GX camera extraction have now been verified
-in the real game; these are prerequisites, not completed scene evaluation.
+Current priority from the user: **finish DLSS and shadNet**. FSR 3/4 are
+deferred and custom loading screens were discarded. The NGX Vulkan backend is
+implemented and tested on actual hardware. The experimental pre-UI hook now
+performs sustained **real Bloodborne DLAA evaluations** at 1080p and 1440p.
+The player UI still does not enable DLSS: lower-resolution presets, object
+motion and complete visual/performance acceptance remain unfinished.
 
 ## Verified sources and local runtime
 
@@ -13,6 +13,12 @@ in the real game; these are prerequisites, not completed scene evaluation.
   `f62f2da39e7f92058465abd112df26e2c6256e31`,
   `gpu/shadps4/video_core/renderer_vulkan/vk_dlss.cpp`. This dynamically loads
   the driver and passes a common scene color/depth/motion/output frame.
+  Rechecked `windows-port`, `launcher-redesign-v2`, `custom-loading-screens-v1`
+  and both offline performance/precache branches: their DLSS and temporal
+  upscaler files have the same blobs (`72f2c43393ed11df52e57b9aa50a6cb575d5c207`
+  and `750582e4b31c9c7545d473bea2ecfb9f5c4c75d3`). There is no newer backend
+  hidden in these branches. The useful viewport-jitter policy was adapted
+  to native GX draws; the old renderer's target redirection is not imported.
 - Checked official NVIDIA DLSS SDK interface documentation at
   `374959484e79a640feaba44c93ac8cfb0a03f5b5` (310.9.1):
   https://github.com/NVIDIA/DLSS/tree/374959484e79a640feaba44c93ac8cfb0a03f5b5/include.
@@ -23,6 +29,9 @@ in the real game; these are prerequisites, not completed scene evaluation.
   C parameter setter/getter functions; the old fork's Windows parameter ABI
   adapter is therefore relevant to a MinGW implementation.
 - Existing user-owned `out/nvngx_dlss.dll` has a valid NVIDIA signature;
+  its file version is **310.9.1.0**. The provider logs the version of the
+  actually loaded module after creating a feature, rather than assuming that
+  a file found on disk is the model used by the game.
   SHA-256 `3975567b8943c53acce397f2b72380092f84f162d00b0d2c7d08a1025c563983`.
   No NVIDIA DLL/model was copied into this repository or CI artifact. Its
   presence alone is not used as proof of runtime availability.
@@ -60,6 +69,83 @@ its Instance, Scheduler, PM4, camera-register or image-cache hooks was ported.
 The backend is built into bbhost. Opt-in diagnostics initialize it on bbhost's
 actual Vulkan device, independently of scene hooks. DLSS/DLAA choices are not
 advertised in the player UI yet.
+
+`options.dlss_preset` stores DLAA, Quality, Balanced, Performance or Ultra
+Performance in bbhost's existing options file. The WPF launcher exposes these
+preferences in Spanish. A stored preference does not enable game DLSS or
+substitute native rendering for a selected Quality preset.
+
+## Scene integration status (October 8, 2026)
+
+The diagnostic `BBHOST_DLSS_SCENE=1` uses the native GX resource bindings,
+existing Vulkan recording/retirement and a per-submission scene pass graph.
+It follows deferred lighting, compute, YEBIS, copies and offscreen Scaleform.
+The intended resolve is before the first scene/UI composite and before
+texture prefetch takes a snapshot, not in the post-HUD presentation blit.
+Native scene vertices receive pixel jitter through their Vulkan viewport,
+including model/skinning shaders without a scene constant block. Vertex
+matrices stay unjittered; verified pixel projection/inverse blocks are cloned
+into the existing staging ring for matching depth reconstruction.
+Guest camera/culling/shadow state is not modified. History uses ordered
+submission frames, resource epochs and camera discontinuities.
+
+Actions builds through `2671069` compiled successfully for Windows and Linux.
+Real-game tests using isolated saves ran 1,800 presentation flips and exited
+normally with unchanged source saves, but recorded **zero scene evaluations**.
+The first partial loading frame triggered the temporal fallback. `7509d51`
+adds an unjittered bootstrap: projection jitter is armed only after a verified
+scene/UI boundary in an earlier ordered frame. Its real-game test still ran
+zero evaluations, but exposed a full-size Scaleform draw sampling the pure
+scene color before YEBIS. `ca1a70e` resolves that scene source before the copy,
+rather than treating its new destination as an eligible temporal input.
+`b41f5c4` also applies viewport jitter and counts every real evaluation.
+Its Actions-built Windows runtime loaded model **310.9.1.0** on RTX 5070 / 617.14:
+
+- 1920x1080 / 60 cap: 1,260 real evaluations across 2,000 presentation flips,
+  two history resets, no fallback, normal exit and unchanged source saves.
+- 2560x1440 / 30 cap: 1,374 real evaluations across 1,800 presentation flips,
+  two history resets, no fallback, normal exit and unchanged source saves.
+- 3840x2160: NGX evaluations succeeded, but **visual acceptance failed**:
+  the scene was black except HUD and some lights. An isolated Native run at
+  the same resolution reproduced it without loading NGX. This resolution
+  failure was subsequently traced to native GX target reuse, not NGX.
+
+`7c84e5e` corrects `GXSceneContext::Initialize` while live-resolution display
+buffers are enabled. The original game accepts a supplied target when its
+width **or** height matches. At 3840x2160 it consequently reused the enlarged
+5120x2160 display target, YEBIS wrote there, and a subsequent Scaleform copy
+overwrote it with an empty scene target. Requiring **both** dimensions keeps
+the normal native allocation path, actual resource dimensions and explicit
+forced-target fallback. All four comparison/branch sites are checked before
+installation, and both width branches are written together before display
+size pinning. No PM4 interception or renderer replacement is involved.
+
+Its Actions-built runtime passed Windows/Linux compilation and Windows ABI
+and provider/scene graph tests. Two isolated 3840x2160 game runs of 1,800 flips
+confirmed the world and character visible again in local captures:
+
+- Native: no NGX model loaded, normal exit, source saves unchanged.
+- DLAA: **1,106 actual scene evaluations**, two history resets, model
+  **310.9.1.0**, no temporal fallback, normal exit, source saves unchanged.
+
+These runs establish recovery from the black-scene defect at the tested
+resolution, not complete temporal image-quality or performance acceptance.
+The user also reported MSI/RTSS overlay flicker present since the earliest
+tests, including Native, before the latest DLAA corrections. RTSSHooks64.dll
+and its Vulkan layer were observed loaded; overlay stability remains an
+independent open investigation. MSI/RTSS settings were not changed.
+
+The first two runs included camera rotation, an attack and death/reload.
+Local captures show the HUD composed after DLAA. Matching Native references
+and consecutive images are retained for further review; **complete ghosting,
+moving-object coverage and in-game performance are not approved**.
+`401eec6` follows GX's actual dimensions after live changes, including rollback,
+rather than assuming the saved resolution is the currently allocated one.
+
+`tools/windows_dlss_scene_probe.py` rejects runs without sustained actual
+evaluations or with a temporal fallback. See [game validation](dlss-visual-validation.md)
+for the requested ghosting, disocclusion, effects, HUD, reset, resolution and
+pacing acceptance tests. Captures and source saves stay outside the repository.
 
 ## Native device and camera validation (October 7, 2026)
 
@@ -111,10 +197,10 @@ resets then, and does not certify a safe final scene/UI resolve boundary.
 motion images. It removes current jitter before reprojection, preserves pixel
 motion units/Y direction, rejects invalid projection pixels and leaves padded
 image regions untouched. It owns no allocator, command submission or idle
-wait; the scene owner must provide synchronization, per-submission descriptor
-sets and retirement. The device must enable extended storage image formats
-for RG16F. This pass currently computes **camera motion only**, and is not
-automatically inserted into the game's draw path.
+wait; the experimental scene owner provides synchronization, per-submission
+descriptor sets and retirement. The device enables extended storage image
+formats for RG16F when supported. This pass computes **camera motion only**;
+its real-game dispatch remains conditional on a verified scene boundary.
 
 `scene_motion_probe` reads back every output pixel on the actual GPU. Static,
 near/far camera translation, current-jitter removal, yaw and points behind the
@@ -145,6 +231,11 @@ Bloodborne's ghosting, moving characters, HUD, loading screens or pacing.
 Each mode evaluates 16 frames with an explicit reset on frame 8. Context
 changes and all seven deferred retirements complete; after fixing retained
 init-data lifetime, two normal-log runs ended with exit 0.
+
+The current probe extends this to 128 frames across all five quality modes,
+1080p/1440p/4K/ultrawide and native BGRA/D32S8 formats. The additional native
+format case passed on the same GPU with no nonfinite output and maximum RGB
+error 0.00196081. This remains synthetic backend evidence.
 
 Local native toolchain: LLVM-mingw `20261006`, LLVM 23/UCRT, Khronos
 Vulkan-Headers `v1.4.350`; links the installed Vulkan loader by its public
@@ -193,7 +284,8 @@ with YEBIS ordering validated rather than guessed.
 
 Native scene matrices are now verified from GX constants, rather than guessed
 from the follow-camera hook. `scene_projection_jitter` produces a tested copy;
-it is not applied to game draws yet. Consistent jitter must cover scene
+the experimental hook binds cloned projection/inverse constants after its
+unjittered bootstrap. Consistent jitter must cover scene
 geometry, depth reconstruction and deferred/post effects while keeping
 Scaleform, culling, shadows and HUD plate projection unjittered.
 
@@ -204,5 +296,7 @@ draw provenance; matching a recycled constant-buffer address is unsafe.
 Skinning, cloth and disocclusion validation remain required.
 
 The common history/jitter/motion-unit policy is tested, but engine load,
-teleport, area and camera-cut hooks are not wired to it yet. No actual
-Bloodborne frame has been evaluated through DLSS in this stage.
+teleport, area and camera-cut hooks are not wired to it yet. The pre-UI DLAA
+path now evaluates real frames, as recorded above. Quality, Balanced and
+Performance still need a native engine render/output size split; the stored
+preset must not be advertised as running until that split exists.
