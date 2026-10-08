@@ -11,38 +11,40 @@ namespace {
 struct Image {
     UpscaleImage image;ImageMemory memory;
     bool initialized=false;
+    VkImageAspectFlags aspect=VK_IMAGE_ASPECT_COLOR_BIT;
     void retire() {
         if(image.view) defer_destroy_private_view(image.view);
         if(image.image) defer_destroy_image(image.image,memory);
         image={};memory={};initialized=false;
     }
-    bool acquire(VkFormat format,UpscaleExtent size) {
-        if(image.image && image.format==format && image.extent==size) return true;
+    bool acquire(VkFormat format,UpscaleExtent size,VkImageAspectFlags plane=VK_IMAGE_ASPECT_COLOR_BIT) {
+        if(image.image && image.format==format && image.extent==size && aspect==plane) return true;
         retire();VkFormatProperties props{};vkGetPhysicalDeviceFormatProperties(g.phys,format,&props);
-        const auto required=VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT|VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT;
+        const bool depth=plane==VK_IMAGE_ASPECT_DEPTH_BIT;
+        const auto required=VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT|(depth?0:VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT);
         if((props.optimalTilingFeatures&required)!=required) return false;
         VkImageCreateInfo c{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};c.imageType=VK_IMAGE_TYPE_2D;c.format=format;
         c.extent={size.width,size.height,1};c.mipLevels=c.arrayLayers=1;c.samples=VK_SAMPLE_COUNT_1_BIT;
-        c.tiling=VK_IMAGE_TILING_OPTIMAL;c.usage=VK_IMAGE_USAGE_SAMPLED_BIT|VK_IMAGE_USAGE_STORAGE_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        c.tiling=VK_IMAGE_TILING_OPTIMAL;c.usage=VK_IMAGE_USAGE_SAMPLED_BIT|(depth?0:VK_IMAGE_USAGE_STORAGE_BIT)|VK_IMAGE_USAGE_TRANSFER_SRC_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT;
         if(vkCreateImage(g.device,&c,nullptr,&image.image)!=VK_SUCCESS) return false;
         VkMemoryRequirements req{};vkGetImageMemoryRequirements(g.device,image.image,&req);
         if(!image_memory_alloc(req,memory) || vkBindImageMemory(g.device,image.image,memory.memory,memory.offset)!=VK_SUCCESS) {retire();return false;}
         VkImageViewCreateInfo v{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};v.image=image.image;v.viewType=VK_IMAGE_VIEW_TYPE_2D;v.format=format;
-        v.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
+        v.subresourceRange={plane,0,1,0,1};
         if(vkCreateImageView(g.device,&v,nullptr,&image.view)!=VK_SUCCESS) {retire();return false;}
-        image.format=format;image.extent=size;image.layout=VK_IMAGE_LAYOUT_GENERAL;return true;
+        aspect=plane;image.format=format;image.extent=size;image.layout=VK_IMAGE_LAYOUT_GENERAL;return true;
     }
-    void writable(VkCommandBuffer commands) {
+    void writable(VkCommandBuffer commands,VkAccessFlags access=VK_ACCESS_SHADER_WRITE_BIT,VkPipelineStageFlags stage=VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT) {
         VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
         b.srcAccessMask=initialized ? VK_ACCESS_MEMORY_READ_BIT|VK_ACCESS_MEMORY_WRITE_BIT : 0;
-        b.dstAccessMask=VK_ACCESS_SHADER_WRITE_BIT;b.oldLayout=initialized ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED;
+        b.dstAccessMask=access;b.oldLayout=initialized ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED;
         b.newLayout=VK_IMAGE_LAYOUT_GENERAL;b.image=image.image;b.srcQueueFamilyIndex=b.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
-        b.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
-        vkCmdPipelineBarrier(commands,initialized ? VK_PIPELINE_STAGE_ALL_COMMANDS_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,0,nullptr,1,&b);
+        b.subresourceRange={aspect,0,1,0,1};
+        vkCmdPipelineBarrier(commands,initialized ? VK_PIPELINE_STAGE_ALL_COMMANDS_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,stage,0,0,nullptr,0,nullptr,1,&b);
         initialized=true;
     }
 };
-Image motion,output,scene_input;std::shared_ptr<SceneMotionPass> pass;VkSampler sampler{};
+Image motion,output,scene_input,scene_depth;std::shared_ptr<SceneMotionPass> pass;VkSampler sampler{};
 VkImageView depth_view{};VkImage viewed_depth{};
 SceneCameraHistory cameras;UpscaleHistory history;
 std::chrono::steady_clock::time_point last_scene;
@@ -92,7 +94,21 @@ bool scene_resolve_locked(UpscalerProvider& provider,const SceneCamera& camera,s
         if(vkCreateSampler(g.device,&c,nullptr,&sampler)!=VK_SUCCESS) return false;
     }
     const auto set=alloc_set_locked(pass->descriptor_layout());if(!set) return false;
-    if(viewed_depth!=depth.image) {
+    auto depth_input=image(depth);
+    if(depth.width!=extent.width || depth.height!=extent.height) {
+        // The shared GX attachment can be native-size even though the world
+        // occupies only its top-left render rectangle. Give camera motion and
+        // NGX the same exact depth footprint as color/MVs; never advertise a
+        // smaller extent for a larger Vulkan image, or interpolate depth.
+        if(!scene_depth.acquire(depth.format,extent,VK_IMAGE_ASPECT_DEPTH_BIT)) return false;
+        scene_depth.writable(g_cmd(),VK_ACCESS_TRANSFER_WRITE_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT);
+        dependency(g_cmd(),VK_ACCESS_MEMORY_WRITE_BIT,VK_ACCESS_TRANSFER_READ_BIT,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT);
+        VkImageCopy copy{};copy.srcSubresource=copy.dstSubresource={VK_IMAGE_ASPECT_DEPTH_BIT,0,0,1};
+        copy.extent={extent.width,extent.height,1};
+        vkCmdCopyImage(g_cmd(),depth.image,VK_IMAGE_LAYOUT_GENERAL,scene_depth.image.image,VK_IMAGE_LAYOUT_GENERAL,1,&copy);
+        dependency(g_cmd(),VK_ACCESS_TRANSFER_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        depth_input=scene_depth.image;
+    } else if(viewed_depth!=depth.image) {
         if(depth_view) defer_destroy_private_view(depth_view);depth_view={};viewed_depth={};
         VkImageViewCreateInfo v{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};v.image=depth.image;v.viewType=VK_IMAGE_VIEW_TYPE_2D;v.format=depth.format;
         // An attachment view may contain both Z and stencil. A sampled depth
@@ -104,7 +120,7 @@ bool scene_resolve_locked(UpscalerProvider& provider,const SceneCamera& camera,s
     const auto commands=g_cmd();motion.writable(commands);output.writable(commands);
     dependency(commands,VK_ACCESS_MEMORY_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
     SceneMatrix reprojection;const auto reset=cameras.prepare(camera,frame,config.resource_epoch,reprojection);
-    auto depth_input=image(depth);depth_input.view=depth_view;
+    if(depth_input.image==depth.image) depth_input.view=depth_view;
     if(!pass->record(commands,set,sampler,depth_input,motion.image,extent,reprojection,jitter)) return false;
     dependency(commands,VK_ACCESS_SHADER_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
     UpscaleFrame inputs;inputs.commands=commands;inputs.color=color_input;inputs.depth=depth_input;inputs.motion=motion.image;inputs.output=output.image;
@@ -120,9 +136,9 @@ bool scene_resolve_locked(UpscalerProvider& provider,const SceneCamera& camera,s
     if(reset!=HistoryReset::None) history.invalidate(reset);
     inputs.reset=history.begin(config);
     if(inputs.reset!=HistoryReset::None)
-        host_log("DLSS: scene after effects picture=%ux%u input=%ux%u output=%ux%u color-format=%d depth=%ux%u",
+        host_log("DLSS: scene after effects picture=%ux%u input=%ux%u output=%ux%u color-format=%d depth-source=%ux%u depth-input=%ux%u",
             color_picture.width,color_picture.height,extent.width,extent.height,config.output.width,config.output.height,
-            color.format,depth.width,depth.height);
+            color.format,depth.width,depth.height,depth_input.extent.width,depth_input.extent.height);
     if(!provider.supports(config,inputs) || !provider.record(config,inputs)) {history.invalidate(HistoryReset::BackendFailure);cameras.clear();return false;}
     dependency(commands,VK_ACCESS_SHADER_WRITE_BIT,VK_ACCESS_TRANSFER_READ_BIT|VK_ACCESS_TRANSFER_WRITE_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT);
     VkImageCopy copy{};copy.srcSubresource=copy.dstSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};copy.extent={config.output.width,config.output.height,1};
@@ -141,7 +157,7 @@ VkImageView scene_resolve_view_locked(std::uint64_t source,std::uint64_t frame) 
 void scene_resolve_shutdown_locked() {
     if(!pass && !sampler && !motion.image.image && !output.image.image) return;
     host_log("DLSS: scene evaluations=%llu; history resets=%llu",static_cast<unsigned long long>(scene_evaluations),static_cast<unsigned long long>(history_resets));
-    render_end_pass_locked();begin_recording_locked();motion.retire();output.retire();scene_input.retire();
+    render_end_pass_locked();begin_recording_locked();motion.retire();output.retire();scene_input.retire();scene_depth.retire();
     if(depth_view) defer_destroy_private_view(depth_view);depth_view={};viewed_depth={};
     auto keep=std::move(pass);const auto old=sampler;sampler={};const auto device=g.device;
     g.slots[g.slot].retire_functions.push_back([keep=std::move(keep),old,device]{if(old) vkDestroySampler(device,old,nullptr);});
