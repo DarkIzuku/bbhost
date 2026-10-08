@@ -46,6 +46,7 @@ static class Program
                     new() { Key = "window_mode", Label = "Window mode", Section = "DISPLAY", Values = ["Windowed", "Fullscreen"] },
                     new() { Key = "frame_cap", Label = "Frame cap", Section = "DISPLAY", Values = ["30", "60", "90", "120", "144", "Off"], Index = 1 },
                     new() { Key = "upscaler", Label = "Upscaling", Section = "UPSCALING", Values = ["Native / Off", "FSR 1"], Index = 1 },
+                    new() { Key = "dlss_preset", Label = "DLSS preset", Section = "UPSCALING", Values = ["DLAA", "Quality", "Balanced", "Performance", "Ultra Performance"], Index = 1 },
                     new() { Key = "ssao", Label = "Ambient occlusion", Section = "GRAPHICS", Values = ["On", "Off"] },
                     new() { Key = "change_appearance", Label = "Hunter's Dream mirror", Section = "PC ENHANCEMENTS", Values = ["On", "Off"], Restart = true }
                 ]
@@ -142,6 +143,12 @@ static class Program
         Until(() => Find<Button>(window, "PlayButton").IsEnabled, "native state and preparation");
         Check(Find<Image>(window, "HeroImage").Source is BitmapSource, "embedded artwork");
         Check(Find<ComboBox>(window, "QuickUpscaler").Items.Count == 2, "only working native providers selectable");
+        var preset = ((Dictionary<string,List<ComboBox>>)typeof(MainWindow).GetField("selectors", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(window)!)["dlss_preset"].Single();
+        Check(preset.Items.Cast<string>().SequenceEqual(new[] { "DLAA · resolución nativa", "Calidad", "Equilibrado", "Rendimiento", "Ultra Rendimiento" }), "Spanish DLSS presets come from the native option schema");
+        preset.SelectedIndex = 2; Call(window, "SaveSettings");
+        Check(TomlSettings.Read(options)["options.dlss_preset"] == "Balanced", "DLSS preference writes the same native options file");
+        preset.SelectedIndex = 0; Call(window, "SaveSettings");
+        Check(TomlSettings.Read(options)["options.dlss_preset"] == "DLAA" && Find<ComboBox>(window, "QuickUpscaler").SelectedIndex == 1, "DLAA preference preserves active provider until scene backend is available");
         Check(Find<ComboBox>(window, "ServerCombo").Items.Cast<ComboBoxItem>().Select(x => x.Content.ToString()).SequenceEqual(new[] { "Offline", "Custom Server" }), "no Hunter's Dream preset");
         Check(TomlSettings.Read(config)["launcher.server_kind"] == "Offline" && TomlSettings.Read(config)["update.check"] == "false", "safe offline first start");
         Check(Find<StackPanel>(window, "GameOptions").Children.Count == 1, "engine enhancements from native schema");

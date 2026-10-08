@@ -58,6 +58,7 @@ enum SettingId {
     kFrameCap,
     kFpsCounter,
     kUpscaler,
+    kDlssPreset,
     kUpscaleRcas,
     kUpscaleSharpness,
     kLiveResolution,
@@ -122,6 +123,8 @@ Setting g_set[kSettingCount] = {
      "Frames per second actually presented, in the top right corner.", false},
     {"upscaler", "Upscaling", {"Native / Off", "FSR 1"}, 1,
      "FSR 1 reconstructs a smaller render to the window size. At equal sizes the native image is used. Temporal providers are not integrated yet.", false},
+    {"dlss_preset", "DLSS preset", {"DLAA", "Quality", "Balanced", "Performance", "Ultra Performance"}, 1,
+     "Saved preference for DLSS. DLAA uses native resolution. Applies when the verified DLSS scene backend is available; this setting alone does not enable DLSS.", false},
     {"upscale_rcas", "RCAS sharpening", {"Off", "On"}, 1,
      "The sharpening pass after FSR 1. Off keeps the EASU result without RCAS.", false},
     {"upscale_sharpness", "RCAS sharpness", {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"}, 9,
@@ -252,6 +255,7 @@ const Row g_rows[] = {
     {Row::Option, nullptr, kCameraHeight},
     {Row::Header, "UPSCALING"},
     {Row::Option, nullptr, kUpscaler},
+    {Row::Option, nullptr, kDlssPreset},
     {Row::Option, nullptr, kUpscaleRcas},
     {Row::Option, nullptr, kUpscaleSharpness},
     {Row::Header, "INPUT"},
@@ -725,6 +729,11 @@ void rebuild_settings() {
     }
     h.mouse_menu = on_of(kMouseMenu);
     h.spatial_upscale = index_of(kUpscaler) == 1;
+    {
+        static constexpr gpu::UpscalePreset presets[] = {gpu::UpscalePreset::NativeAA, gpu::UpscalePreset::Quality,
+            gpu::UpscalePreset::Balanced, gpu::UpscalePreset::Performance, gpu::UpscalePreset::UltraPerformance};
+        h.dlss_preset = presets[index_of(kDlssPreset)];
+    }
     h.upscale_rcas = index_of(kUpscaleRcas) == 1;
     h.upscale_sharpness_stops = 2.0f - 0.2f * static_cast<float>(index_of(kUpscaleSharpness));
     h.live_resolution = index_of(kLiveResolution) == 1;

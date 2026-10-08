@@ -121,10 +121,11 @@ public partial class MainWindow : Window
         foreach (var option in state!.Options) {
             StackPanel target = option.Key == "resolution" || option.Section == "DISPLAY" ? DisplayOptions : option.Section == "GRAPHICS" ? GraphicsOptions : option.Section == "INPUT" ? ControlsOptions : option.Section == "UPSCALING" ? UpscalingOptions : GameOptions;
             var panel = new StackPanel();
-            panel.Children.Add(new TextBlock { Text = option.Label + (option.Restart ? " · requiere reinicio" : ""), FontSize = 16, FontFamily = new System.Windows.Media.FontFamily("Georgia") });
-            var combo = new ComboBox { ItemsSource = option.Values, SelectedIndex = option.Index, Tag = option.Key, MaxWidth = 440, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 10, 0, 8) };
+            panel.Children.Add(new TextBlock { Text = (option.Key == "dlss_preset" ? "Preset de DLSS" : option.Label) + (option.Restart ? " · requiere reinicio" : ""), FontSize = 16, FontFamily = new System.Windows.Media.FontFamily("Georgia") });
+            var values = option.Key == "dlss_preset" ? option.Values.Select(x => x switch { "DLAA" => "DLAA · resolución nativa", "Quality" => "Calidad", "Balanced" => "Equilibrado", "Performance" => "Rendimiento", "Ultra Performance" => "Ultra Rendimiento", _ => x }).ToArray() : option.Values;
+            var combo = new ComboBox { ItemsSource = values, SelectedIndex = option.Index, Tag = option.Key, MaxWidth = 440, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 10, 0, 8) };
             panel.Children.Add(combo);
-            panel.Children.Add(new TextBlock { Text = option.Note, TextWrapping = TextWrapping.Wrap, Foreground = (System.Windows.Media.Brush)FindResource("MutedBrush") });
+            panel.Children.Add(new TextBlock { Text = option.Key == "dlss_preset" ? "Preferencia guardada para DLSS. DLAA conserva la resolución nativa. Se aplicará cuando el backend de DLSS esté disponible y validado; este selector por sí solo no activa DLSS." : option.Note, TextWrapping = TextWrapping.Wrap, Foreground = (System.Windows.Media.Brush)FindResource("MutedBrush") });
             target.Children.Add(new Border { Style = (Style)FindResource("CardStyle"), Child = panel, Margin = new Thickness(0, 0, 0, 12) });
             selectors[option.Key] = [combo]; combo.SelectionChanged += QuickSetting_Changed;
         }
