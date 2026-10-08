@@ -14572,7 +14572,8 @@ void stage_manifest_save_async(const std::string& path) {
 }  // namespace gpu
 
 void host_gpu_temporal_frame_end() {
-    if(!gpu::g_temporal_graph_audit && !gpu::dlss_runtime_scene_locked()) return;
+    static const bool requested=[] {const char* e=std::getenv("BBHOST_DLSS_SCENE");return e && std::strcmp(e,"1")==0;}();
+    if(!gpu::g_temporal_graph_audit && !requested) return;
     std::lock_guard<GpuMutex> lock(gpu::g.mu);
     ++gpu::g_temporal_sequence;
 }

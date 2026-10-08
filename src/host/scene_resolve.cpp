@@ -2,7 +2,9 @@
 #include "host/scene_motion_pass.h"
 #include "host/gpu_internal.h"
 #include "host/settings.h"
+#include "engine/frame_rate.h"
 #include "log.h"
+#include <chrono>
 #include <memory>
 namespace gpu {
 namespace {
@@ -43,6 +45,9 @@ struct Image {
 Image motion,output;std::shared_ptr<SceneMotionPass> pass;VkSampler sampler{};
 VkImageView depth_view{};VkImage viewed_depth{};
 SceneCameraHistory cameras;UpscaleHistory history;
+std::chrono::steady_clock::time_point last_scene;
+VkImage last_depth{},last_color{};
+std::uint64_t resource_epoch=0;
 UpscaleImage image(const RtImage& r) {return {r.image,r.view,r.format,VK_IMAGE_LAYOUT_GENERAL,{r.width,r.height}};}
 void dependency(VkCommandBuffer cmd,VkAccessFlags src,VkAccessFlags dst,VkPipelineStageFlags from,VkPipelineStageFlags to) {
     VkMemoryBarrier b{VK_STRUCTURE_TYPE_MEMORY_BARRIER};b.srcAccessMask=src;b.dstAccessMask=dst;
@@ -58,7 +63,8 @@ bool scene_resolve_locked(UpscalerProvider& provider,const SceneCamera& camera,s
     // scene integration exists or silently reinterpret a Quality selection.
     UpscaleConfig config;config.provider=provider.id();config.preset=UpscalePreset::NativeAA;
     config.render=config.output=extent;config.fullscreen=host_settings().fullscreen;
-    config.resource_epoch=reinterpret_cast<std::uintptr_t>(depth.image)^reinterpret_cast<std::uintptr_t>(color.image);
+    if(last_depth!=depth.image || last_color!=color.image) {last_depth=depth.image;last_color=color.image;++resource_epoch;}
+    config.resource_epoch=resource_epoch;
     if(!pass) pass=std::make_shared<SceneMotionPass>(g.device);
     if(!pass->ready() || !motion.acquire(VK_FORMAT_R16G16_SFLOAT,extent) || !output.acquire(color.format,extent)) return false;
     if(!sampler) {
@@ -84,14 +90,21 @@ bool scene_resolve_locked(UpscalerProvider& provider,const SceneCamera& camera,s
     dependency(commands,VK_ACCESS_SHADER_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
     UpscaleFrame inputs;inputs.commands=commands;inputs.color=image(color);inputs.depth=depth_input;inputs.motion=motion.image;inputs.output=output.image;
     inputs.input_area=inputs.output_area={{0,0},{extent.width,extent.height}};inputs.stage=UpscaleStage::SceneBeforeUI;
-    inputs.jitter=jitter;inputs.engine_jitter_applied=true;inputs.delta_seconds=1.0f/60;
-    history.invalidate(reset);inputs.reset=history.begin(config);
+    inputs.jitter=jitter;inputs.engine_jitter_applied=true;
+    const auto now=std::chrono::steady_clock::now();
+    inputs.delta_seconds=1.0f/std::max(frame_rate_game_fps(),1);
+    if(reset==HistoryReset::None && last_scene.time_since_epoch().count()) {
+        const auto elapsed=std::chrono::duration<float>(now-last_scene).count();
+        if(elapsed>0 && elapsed<=1) inputs.delta_seconds=elapsed;
+    }
+    if(reset!=HistoryReset::None) history.invalidate(reset);
+    inputs.reset=history.begin(config);
     if(!provider.supports(config,inputs) || !provider.record(config,inputs)) {history.invalidate(HistoryReset::BackendFailure);cameras.clear();return false;}
     dependency(commands,VK_ACCESS_SHADER_WRITE_BIT,VK_ACCESS_TRANSFER_READ_BIT|VK_ACCESS_TRANSFER_WRITE_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT);
     VkImageCopy copy{};copy.srcSubresource=copy.dstSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};copy.extent={extent.width,extent.height,1};
     vkCmdCopyImage(commands,output.image.image,VK_IMAGE_LAYOUT_GENERAL,color.image,VK_IMAGE_LAYOUT_GENERAL,1,&copy);
     dependency(commands,VK_ACCESS_TRANSFER_WRITE_BIT,VK_ACCESS_MEMORY_READ_BIT|VK_ACCESS_MEMORY_WRITE_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
-    color.fill_last=false;history.commit();cameras.commit(camera,frame,config.resource_epoch);
+    color.fill_last=false;history.commit();cameras.commit(camera,frame,config.resource_epoch);last_scene=now;
     return true;
 }
 void scene_resolve_shutdown_locked() {
@@ -101,5 +114,6 @@ void scene_resolve_shutdown_locked() {
     auto keep=std::move(pass);const auto old=sampler;sampler={};const auto device=g.device;
     g.slots[g.slot].retire_functions.push_back([keep=std::move(keep),old,device]{if(old) vkDestroySampler(device,old,nullptr);});
     cameras.clear();history.invalidate(HistoryReset::Load);
+    last_scene={};last_depth={};last_color={};
 }
 }
