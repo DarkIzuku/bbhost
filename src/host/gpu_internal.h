@@ -33,6 +33,7 @@ void bb_memory_test_limit(std::uint32_t types, std::uint64_t bytes);
 #include <cstring>
 #include <map>
 #include <memory>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <type_traits>
@@ -258,6 +259,9 @@ struct Gpu {
         bool in_flight = false;
         std::uint64_t serial = 0;  // Gpu::flushes when this slot was submitted
         std::vector<DevBuffer> garbage;
+        // Provider contexts/parameters released only after this submission's
+        // fence. Commands and their resources belong to the native queue.
+        std::vector<std::function<void()>> retire_functions;
         std::vector<DevBuffer> staging_chunks;  // the upload staging chunks this slot's uploads are in, each once (Gpu::staging_users)
         std::vector<DevBuffer> scratch_chunks;  // the same for the device-local untile scratch (Gpu::scratch_users)
         // Images (with their memory and views) whose guest memory was

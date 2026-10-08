@@ -3,6 +3,7 @@
 #include "host/foreign_hooks.h"
 #include "host/gpu_internal.h"
 #include "host/shader_patch.h"
+#include "host/dlss_runtime.h"
 
 #include "gcn/container.h"
 #include "gcn/half.h"
@@ -1499,6 +1500,7 @@ bool init_locked() {
     app.pApplicationName = "bbhost";
     app.apiVersion = VK_API_VERSION_1_3;
     std::vector<const char*> iext;
+    dlss_runtime_instance_locked(g_instance_exts);
     for (const std::string& e : g_instance_exts) iext.push_back(e.c_str());
     std::vector<const char*> layers;
     if (g_validate) {
@@ -1925,6 +1927,7 @@ bool init_locked() {
     dci.pNext = &f2;
     dci.queueCreateInfoCount = 1;
     dci.pQueueCreateInfos = &qci;
+    dlss_runtime_device_locked(g.instance, g.phys, dext);
     dci.enabledExtensionCount = static_cast<std::uint32_t>(dext.size());
     dci.ppEnabledExtensionNames = dext.data();
     if (vkCreateDevice(g.phys, &dci, nullptr, &g.device) == VK_SUCCESS && g.has_push_descriptor) {
@@ -2191,6 +2194,7 @@ bool init_locked() {
              g.has_maint8 ? ", maintenance8" : "", g.present_capable ? ", presentable" : "",
              g.has_tessellation ? ", tessellation" : "");
     g.ok = true;
+    dlss_runtime_initialize_locked(g.instance, g.phys, g.device);
     start_submit_thread();
     start_hang_watchdog();
     start_memory_reserve();
@@ -3274,6 +3278,11 @@ void retire_slot_locked(int k) {
         if (r == VK_ERROR_DEVICE_LOST) device_lost_locked("a wait for a submission");
     }
     vkResetFences(g.device, 1, &sl.fence);
+    if (r == VK_SUCCESS) {
+        auto callbacks = std::move(sl.retire_functions);
+        sl.retire_functions.clear();
+        for (auto& release : callbacks) release();
+    }
     vkResetDescriptorPool(g.device, sl.pool, 0);
     sl.spare_sets.clear();
     for (DevBuffer& b : sl.garbage) {
@@ -4785,6 +4794,12 @@ void host_gpu_save_pipeline_cache_at_exit() {
     while (g_cache_saving.exchange(true)) std::this_thread::sleep_for(std::chrono::milliseconds(10));  // a periodic save first
     save_pipeline_cache_now(path, false);  // the flag stays set: no save after this one
     stage_manifest_save(stage_manifest_path());
+    {
+        std::lock_guard<GpuMutex> lock(g.mu);
+        // No extra wait in a frame. At orderly exit the existing flush drains
+        // the feature and NGX shutdown callbacks before the process ends.
+        if (dlss_runtime_shutdown_locked()) flush_locked();
+    }
 }
 
 void host_gpu_submit() {
