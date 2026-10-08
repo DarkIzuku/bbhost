@@ -364,6 +364,7 @@ GUEST_ABI int hle_gnm_submit_flip(unsigned count, void** dcb, unsigned* dcb_byte
                                  int handle, int buffer, unsigned, std::int64_t arg) {
     hle_gnm_submit_async(0, collect_submit(count, dcb, dcb_bytes),
                          [handle, buffer, arg] {
+                             host_gpu_temporal_frame_end();
                              hle_video_finish_flip(handle, buffer, arg);
                              post_gnm_eop();
                          },

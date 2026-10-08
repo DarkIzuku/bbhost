@@ -11,6 +11,7 @@ void host_gpu_wait_submitted(std::uint64_t) {}
 void host_gpu_queue_lock_only() {}
 bool host_gpu_dispatch(const GpuDispatch&) { return false; }
 bool host_gpu_draw(const GpuDraw&) { return false; }
+void host_gpu_temporal_frame_end() {}
 void host_gpu_flush() {}
 void host_gpu_report() {}
 void host_gpu_submit() {}

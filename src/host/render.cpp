@@ -66,6 +66,7 @@ struct TemporalScene {
     unsigned jittered=0,primary_count=0,full_count=0,draw_count=0,reads_count=0,scene_reads=0,ui_count=0;
 };
 TemporalScene g_temporal_scene;
+std::uint64_t g_temporal_sequence=0;
 bool g_temporal_scene_failed=false;
 thread_local bool t_scene_jitter=false;
 const bool g_temporal_graph_audit=[] {const char* e=std::getenv("BBHOST_TEMPORAL_AUDIT");return e && std::strcmp(e,"1")==0;}();
@@ -1905,16 +1906,15 @@ struct DrawState {
     std::uint64_t program_fp = 0;  // GpuDrawInputs::program_fp: stands for vte_cntl and the PS/VS fields below it
 };
 
-bool scene_draw_prepare_locked(const GpuDraw& d,const DrawState& s,const StageImages* stages) {
+bool scene_draw_prepare_locked(const GpuDraw& d,const DrawState& s,const KeyStage* const* stages) {
     auto* provider=dlss_runtime_scene_locked();
     if((!provider || g_temporal_scene_failed) && !g_temporal_graph_audit) return false;
     if(!d.gx_token || !d.gx_token_kind) return false;
     auto& frame=g_temporal_scene;
-    // YEBIS tokens have complete native draw inputs but no GxDrawObjects.
-    // They belong to the scene currently executing in the ordered draw path.
-    // Reading the asynchronous CPU flip counter here would split that scene.
-    if(!d.gx_objects && frame.flip==~0ull) return false;
-    const auto flip=d.gx_objects ? d.gx_objects->call_flip : frame.flip;
+    // A GX call's presentation counter can differ between recording threads
+    // within one scene. Only the ordered submission's frame end advances this
+    // sequence; native draws and YEBIS therefore share one history sample.
+    const auto flip=g_temporal_sequence;
     if(frame.flip!=flip) {
         static unsigned audited=0;
         if(g_temporal_graph_audit && frame.primary_count && (audited++<8 || frame.flip%120==0))
@@ -1927,8 +1927,12 @@ bool scene_draw_prepare_locked(const GpuDraw& d,const DrawState& s,const StageIm
     }
     const bool full=std::fabs(std::fabs(s.vport[0]*2)-frame.extent.width)<1 && std::fabs(std::fabs(s.vport[2]*2)-frame.extent.height)<1;
     std::vector<std::uint64_t> reads,writes;
-    for(int st=0;st<2;++st) for(const auto& binding:stages[st].images) {
-        ViewRecord r;if(binding.view && describe_view_locked(binding.view,r) && r.render_target && r.guest_base) reads.push_back(r.guest_base);
+    for(int st=0;st<2;++st) for(const auto& binding:stages[st]->images) {
+        // Use the engine's resource identity, before prefetch creates a
+        // top-left snapshot with an internal, synthetic address. Resolving
+        // after that copy would leave the UI composite reading stale color.
+        const auto base=binding.resolved ? tsharp_base(binding.w) : 0;
+        if(base && find_render_target(base)) reads.push_back(base);
     }
     for(const auto* color:s.color) if(color) writes.push_back(color->base);
     const auto kind=std::strcmp(d.gx_token_kind,"scaleform")==0 ? ScenePassKind::Scaleform :
@@ -11316,6 +11320,17 @@ static bool draw_impl(const GpuDraw& d) {
             pl.paths_match[0] = key_stage_matches(pl.vs.meta(), vs_paths);
             pl.paths_match[1] = ps_paths ? key_stage_matches(pl.ps.meta(), *ps_paths) : pl.ps.meta().images.empty() && pl.ps.meta().samplers.empty();
         }
+        t_scene_jitter=false;
+        if(dlss_runtime_scene_locked() || g_temporal_graph_audit) {
+            static thread_local KeyStage temporal_words[2];
+            const KeyStage* words[2]={&key_stages[0],&key_stages[1]};
+            for(int st=0;st<2;++st) if(!pl.paths_match[st]) {
+                resolve_key_stage(st ? &pl.ps.meta() : &pl.vs.meta(),st ? s.ps_user : s.vs_user,gx_stage[st],temporal_words[st]);
+                words[st]=&temporal_words[st];
+            }
+            t_scene_jitter=scene_draw_prepare_locked(d,s,words);
+            if(g_temporal_scene.graphics_dirty) {g_recorded=RecordedState{};g_temporal_scene.graphics_dirty=false;}
+        }
         for (int st = 0; st < 2; ++st) bump(pl.paths_match[st] ? g_prefetch_key_words : g_prefetch_resolved);
         t_resolve_site = kSitePrefetch;
         t_draw_pipeline = pl.name.c_str();
@@ -11340,8 +11355,6 @@ static bool draw_impl(const GpuDraw& d) {
         prefetch_stage_images(pl.ps.meta(), s.ps_user, stage_images[1], gx_stage[1], pl.paths_match[1] ? &key_stages[1] : nullptr);
         t_resolve_site = kSiteBuffers;
     }
-    t_scene_jitter=scene_draw_prepare_locked(d,s,stage_images);
-    if(g_temporal_scene.graphics_dirty) {g_recorded=RecordedState{};g_temporal_scene.graphics_dirty=false;}
     draw_stamp.to(kRenderCostPrefetch);
     // BBHOST_CAPTURE_DRAW (draw_capture.h): run everything recorded so far
     // before this draw's sets exist, so memory and images hold its inputs.
@@ -14557,6 +14570,12 @@ void stage_manifest_save_async(const std::string& path) {
 }
 
 }  // namespace gpu
+
+void host_gpu_temporal_frame_end() {
+    if(!gpu::g_temporal_graph_audit && !gpu::dlss_runtime_scene_locked()) return;
+    std::lock_guard<GpuMutex> lock(gpu::g.mu);
+    ++gpu::g_temporal_sequence;
+}
 
 bool host_gpu_draw_window(std::uint64_t dst, const void* data, std::uint32_t bytes) {
     static const bool gpu_writes = [] {

@@ -241,6 +241,9 @@ bool host_gpu_memory_tight();
 bool host_gpu_dispatch(const GpuDispatch& d);
 // Queues one draw.
 bool host_gpu_draw(const GpuDraw& d);
+// Ordered scene-frame boundary after the submitted frame's GX draws. This
+// advances temporal history independently of asynchronous presentation.
+void host_gpu_temporal_frame_end();
 // Runs queued work and waits for it; call before the command processor
 // reads or writes memory the shaders may touch.
 void host_gpu_flush();
