@@ -7,7 +7,7 @@
 struct GameInstallation {
     bool ok = false;
     bool prepared = false;
-    std::string app0, eboot, version, title_id, sha256, error;
+    std::string app0, update, eboot, version, title_id, sha256, error;
 };
 
 // Bounded extraction of an already-clear SELF. No decryption or module linking.

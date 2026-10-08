@@ -133,7 +133,8 @@ public partial class MainWindow : Window
     void BuildMods()
     {
         PluginOptions.Children.Clear(); PatchOptions.Children.Clear(); plugins.Clear(); patches.Clear();
-        var config = TomlSettings.Read(string.IsNullOrEmpty(host.Profile) ? state!.ConfigFile : host.Profile);
+        var config = TomlSettings.Read(state!.ConfigFile);
+        if (!string.IsNullOrEmpty(host.Profile)) foreach (var entry in TomlSettings.Read(host.Profile)) config[entry.Key] = entry.Value;
         var names = new HashSet<string>();
         foreach (var folder in new[] { Path.Combine(host.Root, "plugins"), Path.Combine(Path.GetDirectoryName(state!.ConfigFile)!, "plugins"), Path.Combine(state.Data, "plugins") }) {
             if (!Directory.Exists(folder)) continue;
@@ -141,7 +142,11 @@ public partial class MainWindow : Window
         }
         foreach (var name in names.Order()) {
             if (!Regex.IsMatch(name, @"^[A-Za-z0-9_-]+$")) continue;
-            var check = new CheckBox { Content = name, IsChecked = config.GetValueOrDefault("plugins." + name, "false") == "true", Margin = new Thickness(0, 6, 0, 6) };
+            bool enabled = config.GetValueOrDefault("plugins." + name, "false") == "true";
+            // Preserve upstream's one-time migration without writing an
+            // implicit false before the runtime can migrate the old switch.
+            if (name == "debug_menu" && !config.ContainsKey("plugins.debug_menu") && state.LegacyDebugMenu) enabled = true;
+            var check = new CheckBox { Content = name == "debug_menu" ? "Debug Menu · ` para abrir" : name, IsChecked = enabled, Margin = new Thickness(0, 6, 0, 6) };
             plugins[name] = check; PluginOptions.Children.Add(check); check.Checked += Preference_Changed; check.Unchecked += Preference_Changed;
         }
         foreach (var patch in state.Patches) {
@@ -202,6 +207,7 @@ public partial class MainWindow : Window
         GamePathStatus.Text = PathBox.Text;
         GameVersionStatus.Text = game.Ok ? $"Bloodborne {game.Version} · {game.TitleId}" : "Instalación pendiente";
         InstallationDetail.Text = game.Ok ? "Instalación validada. Preparación automática completada." : game.Error;
+        if (game.Ok && game.Update.Length > 0) InstallationDetail.Text += " Update 1.09 leído desde: " + game.Update;
         PlayHint.Text = InstallationDetail.Text;
         UpdateReady();
     }

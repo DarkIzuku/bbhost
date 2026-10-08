@@ -817,30 +817,6 @@ void config_set_online(const std::string& host, const std::string& scheme, bool 
     g_cfg.auth_server = auth_server;
 }
 
-GameFolders config_game_folders(const std::string& app0) {
-    GameFolders g;
-    std::string a = app0;
-    while (a.size() > 1 && (a.back() == '/' || a.back() == '\\')) a.pop_back();
-    if (a.empty()) return g;
-    static const char* const kSuffixes[] = {"-UPDATE", "-patch"};  // shadPS4 tries them in this order
-    for (const char* s : kSuffixes) {
-        const std::size_t n = std::strlen(s);
-        if (a.size() > n && a.compare(a.size() - n, n, s) == 0 && dir_exists(a.substr(0, a.size() - n) + "/dvdroot_ps4")) {
-            g.base = a.substr(0, a.size() - n);
-            g.update = a;
-            return g;
-        }
-    }
-    g.base = a;
-    for (const char* s : kSuffixes) {
-        if (dir_exists(a + s)) {
-            g.update = a + s;
-            break;
-        }
-    }
-    return g;
-}
-
 App0Version config_app0_version(const std::string& app0) {
     App0Version v;
     const GameFolders g = config_game_folders(app0);

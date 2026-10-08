@@ -43,6 +43,7 @@ add_executable(bbhost
   src/core/write_watch.cpp
   src/core/elf.cpp
   src/core/game_installation.cpp
+  src/core/game_folders.cpp
   src/core/imports.cpp
   src/core/thunk.cpp
   src/core/portable.cpp
@@ -335,7 +336,7 @@ endif()
 
 if(UNIX)
   enable_testing()
-  add_executable(game_installation_test tests/game_installation_test.cpp src/core/game_installation.cpp src/core/sfo.cpp src/core/sha256.cpp)
+  add_executable(game_installation_test tests/game_installation_test.cpp src/core/game_installation.cpp src/core/game_folders.cpp src/core/sfo.cpp src/core/sha256.cpp)
   target_include_directories(game_installation_test PRIVATE src)
   add_test(NAME game_installation_test COMMAND game_installation_test)
   add_executable(upscale_policy_test tests/upscale_policy_test.cpp src/host/upscale_policy.cpp)
@@ -378,7 +379,7 @@ if(UNIX)
   target_include_directories(image_file_test PRIVATE src)
   target_link_libraries(image_file_test PRIVATE ZLIB::ZLIB)
   add_test(NAME image_file_test COMMAND image_file_test)
-  add_executable(config_test tests/config_test.cpp src/core/config.cpp src/core/sfo.cpp)
+  add_executable(config_test tests/config_test.cpp src/core/config.cpp src/core/game_folders.cpp src/core/sfo.cpp)
   target_include_directories(config_test PRIVATE src ${CMAKE_BINARY_DIR}/gen)
   add_dependencies(config_test bbhost_version)
   add_test(NAME config_test COMMAND config_test)

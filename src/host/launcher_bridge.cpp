@@ -3,6 +3,7 @@
 #include "core/config.h"
 #include "core/game_installation.h"
 #include "host/options.h"
+#include "host/settings.h"
 #include "engine/patch_manifest.h"
 #include "bbhost_version.h"
 
@@ -52,8 +53,8 @@ bool launcher_bridge_command(int argc, char** argv, int* result) {
     }
     if (command == "prepare") {
         const GameInstallation r = game_prepare(game, c.data);
-        std::printf("{\"ok\":%s,\"prepared\":%s,\"app0\":%s,\"eboot\":%s,\"version\":%s,\"title_id\":%s,\"sha256\":%s,\"error\":%s}\n",
-                    boolean(r.ok), boolean(r.prepared), quote(r.app0).c_str(), quote(r.eboot).c_str(),
+        std::printf("{\"ok\":%s,\"prepared\":%s,\"app0\":%s,\"update\":%s,\"eboot\":%s,\"version\":%s,\"title_id\":%s,\"sha256\":%s,\"error\":%s}\n",
+                    boolean(r.ok), boolean(r.prepared), quote(r.app0).c_str(), quote(r.update).c_str(), quote(r.eboot).c_str(),
                     quote(r.version).c_str(), quote(r.title_id).c_str(), quote(r.sha256).c_str(), quote(r.error).c_str());
         *result = r.ok ? 0 : 3; return true;
     }
@@ -83,7 +84,7 @@ bool launcher_bridge_command(int argc, char** argv, int* result) {
                        ",\"config_file\":" + quote(config_user_file()) + ",\"options_file\":" + quote(host_options_file()) +
                        ",\"app0\":" + quote(c.app0) + ",\"data\":" + quote(c.data) +
                        ",\"mods\":" + quote(c.mods.empty() ? c.data + "/mods" : c.mods) +
-                       ",\"account\":" + quote(host_account_signed_in()) + ",\"options\":[";
+                       ",\"account\":" + quote(host_account_signed_in()) + ",\"legacy_debug_menu\":" + boolean(host_settings().debug_menu) + ",\"options\":[";
     bool first = true;
     for (const HostOptionInfo& o : host_options_describe()) {
         if (!first) json += ',';

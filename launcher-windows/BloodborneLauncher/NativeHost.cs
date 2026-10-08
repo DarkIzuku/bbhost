@@ -36,6 +36,7 @@ public sealed class NativeState
     public string Mods { get; set; } = "";
     public string Account { get; set; } = "";
     public List<NativeOption> Options { get; set; } = [];
+    [JsonPropertyName("legacy_debug_menu")] public bool LegacyDebugMenu { get; set; }
     public List<NativePatch> Patches { get; set; } = [];
 }
 public sealed class PreparedGame
@@ -43,6 +44,7 @@ public sealed class PreparedGame
     public bool Ok { get; set; }
     public string Error { get; set; } = "";
     public string App0 { get; set; } = "";
+    public string Update { get; set; } = "";
     public string Eboot { get; set; } = "";
     public string Version { get; set; } = "";
     [JsonPropertyName("title_id")] public string TitleId { get; set; } = "";

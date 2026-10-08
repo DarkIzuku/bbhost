@@ -1,4 +1,5 @@
 #include "core/game_installation.h"
+#include "core/config.h"
 #include "core/sfo.h"
 #include "core/sha256.h"
 #include "engine/addr.h"
@@ -34,30 +35,39 @@ std::vector<std::uint8_t> read(const fs::path& p) {
     if (!f.read(reinterpret_cast<char*>(b.data()), n)) throw std::runtime_error("The executable could not be read completely.");
     return b;
 }
+std::string path_text(const fs::path& p) {
+    const auto u = p.generic_u8string();
+    return std::string(u.begin(), u.end());
+}
+fs::path effective_file(const GameFolders& g, const fs::path& relative) {
+    const auto update = fs::u8path(g.update) / relative;
+    return !g.update.empty() && fs::is_regular_file(update) ? update : fs::u8path(g.base) / relative;
+}
 bool dump(const fs::path& p) {
-    return fs::is_directory(p / "dvdroot_ps4") && fs::is_regular_file(p / "eboot.bin") &&
-           fs::is_regular_file(p / "sce_sys" / "param.sfo");
+    const auto g = config_game_folders(path_text(p));
+    return fs::is_directory(fs::u8path(g.base) / "dvdroot_ps4") &&
+           fs::is_regular_file(effective_file(g, "eboot.bin")) &&
+           fs::is_regular_file(effective_file(g, "sce_sys/param.sfo"));
 }
 fs::path resolve(const std::string& selected) {
     if (selected.empty()) throw std::runtime_error("Select the Bloodborne folder.");
     fs::path p = fs::weakly_canonical(fs::u8path(selected));
     if (p.filename() == "dvdroot_ps4") p = p.parent_path();
-    if (dump(p)) return p;
+    if (dump(p)) return fs::weakly_canonical(fs::u8path(config_game_folders(path_text(p)).base));
     std::vector<fs::path> matches;
     if (fs::is_directory(p)) {
         unsigned seen = 0;
         for (const auto& e : fs::directory_iterator(p)) {
             if (++seen > 128) throw std::runtime_error("Select the game folder inside this installation.");
-            if (e.is_directory() && dump(e.path())) matches.push_back(e.path());
+            if (e.is_directory() && dump(e.path())) {
+                const auto base = fs::weakly_canonical(fs::u8path(config_game_folders(path_text(e.path())).base));
+                if (std::find(matches.begin(), matches.end(), base) == matches.end()) matches.push_back(base);
+            }
         }
     }
     if (matches.size() == 1) return fs::weakly_canonical(matches[0]);
     throw std::runtime_error(matches.empty() ? "The folder must contain dvdroot_ps4, sce_sys/param.sfo and eboot.bin."
                                             : "This folder contains several dumps. Select one game folder.");
-}
-std::string path_text(const fs::path& p) {
-    const auto u = p.generic_u8string();
-    return std::string(u.begin(), u.end());
 }
 bool beneath(const fs::path& p, const fs::path& root) {
     const auto r = p.lexically_relative(root);
@@ -122,12 +132,20 @@ GameInstallation game_prepare(const std::string& selected, const std::string& da
     try {
         const fs::path app0 = resolve(selected);
         r.app0 = path_text(app0);
+        const auto folders = config_game_folders(r.app0);
+        r.update = folders.update;
         std::map<std::string, SfoValue> values;
-        if (!sfo_read(path_text(app0 / "sce_sys" / "param.sfo"), &values, &r.error)) return r;
+        if (!sfo_read(path_text(effective_file(folders, "sce_sys/param.sfo")), &values, &r.error)) return r;
         r.version = values["APP_VER"].text;
         r.title_id = values["TITLE_ID"].text;
+        if (!folders.update.empty()) {
+            std::map<std::string, SfoValue> base; std::string ignored;
+            if (sfo_read(path_text(app0 / "sce_sys/param.sfo"), &base, &ignored) &&
+                !base["TITLE_ID"].text.empty() && !r.title_id.empty() && base["TITLE_ID"].text != r.title_id)
+                throw std::runtime_error("The update folder belongs to a different game/title ID.");
+        }
         if (r.version != "01.09") throw std::runtime_error("Bloodborne 1.09 is required. Detected version: " + r.version);
-        const fs::path source = app0 / "eboot.bin";
+        const fs::path source = effective_file(folders, "eboot.bin");
         const auto bytes = read(source);
         std::vector<std::uint8_t> extracted;
         const bool is_elf = number(bytes, 0, 4) == 0x464c457f;
@@ -141,7 +159,8 @@ GameInstallation game_prepare(const std::string& selected, const std::string& da
             if (data.empty()) throw std::runtime_error("A writable data folder is required for game preparation.");
             const fs::path cache = fs::weakly_canonical(fs::u8path(data) / "cache" / "game" /
                                    sha256_hex(bytes.data(), bytes.size()));
-            if (beneath(cache, app0)) throw std::runtime_error("Choose a data folder outside the original game dump.");
+            if (beneath(cache, app0) || (!folders.update.empty() && beneath(cache, fs::weakly_canonical(fs::u8path(folders.update)))))
+                throw std::runtime_error("Choose a data folder outside the original game and update folders.");
             const fs::path target = cache / "eboot.elf";
             bool valid_cache = false;
             if (fs::is_regular_file(target)) {

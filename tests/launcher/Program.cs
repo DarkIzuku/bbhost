@@ -36,7 +36,7 @@ static class Program
         if (args.Contains("--launcher-state")) {
             Console.WriteLine(JsonSerializer.Serialize(new NativeState {
                 Ok = true, Version = "test-fixture", Commit = "fixture", ConfigFile = config, OptionsFile = options,
-                App0 = Path.Combine(root, "Test game"), Data = data, Mods = Path.Combine(data, "mods"), Account = "Not signed in",
+                App0 = Path.Combine(root, "Test game"), Data = data, Mods = Path.Combine(data, "mods"), Account = "Not signed in", LegacyDebugMenu = true,
                 Options = [
                     new() { Key = "resolution", Label = "Resolution", Section = "GRAPHICS", Values = ["1920x1080", "2560x1440", "3840x2160"], Index = 0 },
                     new() { Key = "window_mode", Label = "Window mode", Section = "DISPLAY", Values = ["Windowed", "Fullscreen"] },
@@ -110,6 +110,7 @@ static class Program
         foreach (var file in Directory.EnumerateFiles(AppContext.BaseDirectory)) File.Copy(file, Path.Combine(root, Path.GetFileName(file)));
         File.Copy(Path.Combine(root, "LauncherChecks.exe"), Path.Combine(root, "bbhost.exe"));
         Directory.CreateDirectory(Path.Combine(root, "config")); Directory.CreateDirectory(Path.Combine(root, "data"));
+        Directory.CreateDirectory(Path.Combine(root, "plugins")); File.WriteAllText(Path.Combine(root, "plugins", "debug_menu.dll"), "fixture only, never loaded");
         string config = Path.Combine(root, "config", "bbhost.toml"), options = Path.Combine(root, "config", "bbhost-options.toml");
         File.WriteAllText(config, "# preserve\n[plugins]\nunknown_plugin = true\n");
         File.WriteAllText(options, "# preserve option comment\n[options]\nversion = \"2\"\n[account]\nname = \"fixture\"\ntoken = \"fixture-token-must-survive\"\n[keys]\nattack = \"K\"\n");
@@ -137,12 +138,18 @@ static class Program
         Check(Find<ComboBox>(window, "ServerCombo").Items.Cast<ComboBoxItem>().Select(x => x.Content.ToString()).SequenceEqual(new[] { "Offline", "Custom Server" }), "no Hunter's Dream preset");
         Check(TomlSettings.Read(config)["launcher.server_kind"] == "Offline" && TomlSettings.Read(config)["update.check"] == "false", "safe offline first start");
         Check(Find<StackPanel>(window, "GameOptions").Children.Count == 1, "engine enhancements from native schema");
+        Check(Find<StackPanel>(window, "PluginOptions").Children.OfType<CheckBox>().Single(x => x.Content.ToString()!.StartsWith("Debug Menu")).IsChecked == true,
+              "old debug menu choice migrates to official plugin before saving");
         Find<ComboBox>(window, "QuickResolution").SelectedIndex = 1; Call(window, "SaveSettings");
         Check(TomlSettings.Read(options)["options.resolution"] == "2560x1440", "quick control writes bbhost settings");
         Check(File.ReadAllText(options).Contains("fixture-token-must-survive"), "WPF save preserves account");
         Find<TextBox>(window, "CustomServerBox").Text = "http://192.0.2.15:31315";
         Call(window, "ShadNetPage_Click", window, new RoutedEventArgs()); Call(window, "SaveSettings");
         var profile = Directory.GetFiles(Path.Combine(root, "config", "profiles"), "bloodborne-offline.toml").Single();
+        Check(TomlSettings.Read(profile)["plugins.debug_menu"] == "true", "debug menu plugin enable persisted in native profile");
+        Find<StackPanel>(window, "PluginOptions").Children.OfType<CheckBox>().Single().IsChecked = false; Call(window, "SaveSettings"); Call(window, "BuildMods");
+        Check(Find<StackPanel>(window, "PluginOptions").Children.OfType<CheckBox>().Single().IsChecked == false,
+              "explicit plugin disable takes precedence over legacy debug choice");
         Check(TomlSettings.Read(profile)["online.account_page"] == "http://192.0.2.15:31316/register", "integrated shadNet registration uses separate website listener and native TOML");
         Check(TomlSettings.Read(profile)["online.offline"] == "true", "website link cannot enable incompatible game protocol");
         Check(ServerLinks.ShadNetRegistration("https://[2001:db8::1]:31315").AbsoluteUri == "https://[2001:db8::1]:31316/register", "website link preserves IPv6 and explicit TLS scheme");
