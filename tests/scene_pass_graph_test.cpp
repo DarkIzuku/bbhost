@@ -29,5 +29,13 @@ int main() {
     check(graph.observe(ScenePassKind::Scaleform,true,none,post)==40,"reused target resolves only its new scene content");
     graph.begin(105);graph.seed(scene);graph.clear(20);
     check(!graph.scene_owned(20),"explicit clear invalidates prior target provenance");
+    graph.begin(106);graph.seed(scene);
+    check(graph.observe(ScenePassKind::Scaleform,true,scene,ui)==20,"Scaleform sampling the 3D scene resolves its source before the offscreen composite");
+    check(graph.ui_owned(10) && !graph.scene_owned(10),"offscreen composite remains UI and is never an upscale source");
+    graph.begin(107);graph.seed(scene);graph.seed(post);
+    const std::array<std::uint64_t,2> scenes{20,40};
+    check(!graph.observe(ScenePassKind::Scaleform,true,scenes,ui),"Scaleform reading multiple scenes is ambiguous");
+    graph.begin(108);graph.seed(scene);
+    check(!graph.observe(ScenePassKind::Scaleform,false,scene,ui),"partial scene previews do not establish a fullscreen resolve");
     std::printf("scene pass graph: %s\n",failures?"FAILED":"passed");return failures?1:0;
 }

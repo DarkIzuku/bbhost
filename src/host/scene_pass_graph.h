@@ -20,8 +20,9 @@ public:
     bool ui_owned(std::uint64_t target) const;
     void clear(std::uint64_t target) {content_.erase(target);}
     // Returns the scene image to resolve BEFORE this draw. For Scaleform it
-    // is its destination; for a native UI composite it is the unique scene
-    // input. Downscaled UI preparations and ambiguous composites are declined.
+    // is its scene destination or its unique pure scene input; for a native
+    // UI composite it is the unique scene input. Downscaled UI preparations
+    // and ambiguous composites are declined.
     std::uint64_t observe(ScenePassKind,bool full_viewport,
         std::span<const std::uint64_t> reads,std::span<const std::uint64_t> writes,bool replaces_contents=false);
 };

@@ -25,6 +25,10 @@ std::uint64_t ScenePassGraph::observe(ScenePassKind kind,bool full,std::span<con
     if(!boundary_ && full) {
         if(kind==ScenePassKind::Scaleform) {
             for(auto w:writes) if(scene_owned(w)) {if(resolve && resolve!=w) {ambiguous=true;break;}resolve=w;}
+            // Scaleform can sample the completed 3D scene into a fresh
+            // offscreen target before its final UI composition. Resolve the
+            // pure scene source before this draw/snapshot, not that UI target.
+            if(!resolve && scene && !ambiguous) resolve=scene;
         } else if((inputs&Ui) && scene && !ambiguous) resolve=scene;
         if(ambiguous) resolve=0;
     }

@@ -7221,6 +7221,10 @@ bool render_copy_target_locked(std::uint64_t src_base, std::uint64_t dst_base, s
         if (g_pending_clears.erase(dst_base)) ++g_pending_gen;
         dst.fill_last = false;
         g_rt_copies.fetch_add(1);
+        if(scene_tracking_locked()) {
+            const std::uint64_t reads[]={src_base},writes[]={dst_base};
+            scene_dispatch_observe_locked(reads,writes);
+        }
         return true;
     }
     if (by_compute) {
