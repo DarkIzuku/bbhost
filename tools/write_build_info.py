@@ -13,6 +13,8 @@ info = {
     "repository": "DarkIzuku/bbhost",
     "commit": version("git", "rev-parse", "HEAD"),
     "upstream_baseline": "fa904a4f9cab3753f2ec7d258cd8d271b99f6166",
+    "upstream_integrated": "5f058af3a9134896689933a060a736c301423994",
+    "upstream_release": "v0.2.15",
     "workflow": "windows-integration.yml",
     "target": "Windows x86-64",
     "compiler": version("clang", "--version"),

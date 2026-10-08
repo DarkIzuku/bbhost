@@ -22,6 +22,10 @@ jobs:
           fetch-depth: 0
       - name: Trust checkout
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Read the integrated upstream release tag for version metadata
+        run: |
+          git fetch --no-tags https://github.com/droogie/bbhost.git refs/tags/v0.2.15:refs/tags/v0.2.15
+          test "$(git rev-parse 'v0.2.15^{commit}')" = 5f058af3a9134896689933a060a736c301423994
       - uses: actions/cache@v4
         with:
           path: build/win-deps/prefix
