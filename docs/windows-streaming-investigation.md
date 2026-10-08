@@ -95,7 +95,7 @@ hashes remained unchanged; no measured run dumped frames.
 
 Cold application cache: first loading screen 2.21 s, first world frame at
 9.6 s. Warm runs: loading 2.01/2.09 s, first world frame at 9.8/9.9 s.
-The cached stage manifest reconstructed 236 stages with zero failures in
+The cached stage manifest reconstructed 187 stages with zero failures in
 both warm runs, and native Vulkan cache reuse was logged. First-world time
 did not improve consistently; the small loading difference is not evidence
 of a general speedup. Driver/OS caches were already populated by preceding
