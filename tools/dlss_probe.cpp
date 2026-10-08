@@ -11,6 +11,7 @@
 #include <functional>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 using namespace gpu;
 namespace {
@@ -137,7 +138,8 @@ void run_mode(Device& d, DlssProvider& provider, UpscaleExtent render, UpscaleEx
 }
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
-    if (argc != 3) { std::fprintf(stderr, "Usage: dlss_probe MODEL_DIRECTORY WRITABLE_CACHE_DIRECTORY\nUses synthetic frames only. Does not enable in-game DLSS.\n"); return 2; }
+    const bool lifecycle_only = argc == 4 && std::strcmp(argv[3], "--lifecycle-only") == 0;
+    if (argc != 3 && !lifecycle_only) { std::fprintf(stderr, "Usage: dlss_probe MODEL_DIRECTORY WRITABLE_CACHE_DIRECTORY [--lifecycle-only]\nUses synthetic frames only. Does not enable in-game DLSS.\n"); return 2; }
     try {
         Device d;
         {
@@ -173,14 +175,26 @@ int main(int argc, char** argv) {
             VkCommandBufferAllocateInfo ca{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO}; ca.commandPool = d.pool; ca.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; ca.commandBufferCount = 1; vk_check(vkAllocateCommandBuffers(d.device, &ca, &d.commands), "allocate command buffer");
             VkFenceCreateInfo fc{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO}; vk_check(vkCreateFence(d.device, &fc, nullptr, &d.fence), "create fence");
             if (!provider.initialize(d.instance, d.physical, d.device)) throw std::runtime_error(provider.problem());
+            if (lifecycle_only) {
+                DlssOptimalSettings optimal;
+                if (!provider.optimal_settings({1920, 1080}, UpscalePreset::Quality, optimal)) throw std::runtime_error(provider.problem());
+            } else {
             run_mode(d, provider, {1280, 720}, {1920, 1080}, UpscalePreset::Quality);
             run_mode(d, provider, {960, 540}, {1920, 1080}, UpscalePreset::Performance);
             run_mode(d, provider, {1920, 1080}, {1920, 1080}, UpscalePreset::NativeAA);
             run_mode(d, provider, {1706, 960}, {2560, 1440}, UpscalePreset::Quality);
             run_mode(d, provider, {1280, 720}, {3840, 2160}, UpscalePreset::UltraPerformance);
             run_mode(d, provider, {1706, 720}, {2560, 1080}, UpscalePreset::Quality);
+            }
         }
-        d.retire(); std::printf("DLSS integration: 96 synthetic frames passed, DLAA/resolution/reset/retirement checked (%u retirements). Game dispatch is not enabled.\n", d.retirement_count);
+        if (lifecycle_only) {
+            // Runtime shutdown may retire on a different host thread. Exercise
+            // the initialized-but-never-dispatched case independently of frames.
+            std::thread([&] { d.retire(); }).join();
+            std::printf("DLSS lifecycle: initialized, optimal size queried, retired on another thread (%u retirements). No scene or synthetic frames dispatched.\n", d.retirement_count);
+        } else {
+            d.retire(); std::printf("DLSS integration: 96 synthetic frames passed, DLAA/resolution/reset/retirement checked (%u retirements). Game dispatch is not enabled.\n", d.retirement_count);
+        }
         return 0;
     } catch (const std::exception& e) { std::fprintf(stderr, "DLSS integration failed: %s\n", e.what()); return 1; }
 }

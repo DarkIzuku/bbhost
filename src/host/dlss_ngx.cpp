@@ -80,7 +80,24 @@ struct Core {
     Result (*create)(VkDevice, VkCommandBuffer, int, Parameter*, Handle**) = nullptr;
     Result (*evaluate)(VkCommandBuffer, const Handle*, const Parameter*, void*) = nullptr;
     Result (*release)(Handle*) = nullptr;
+#ifdef _WIN32
+    // This is the driver's export, not the one-argument SDK wrapper. The
+    // wrapper supplies a second output containing the remaining init count.
+    // Omitting it writes through an arbitrary RDX on Windows x64.
+    Result (*shutdown)(VkDevice, unsigned*) = nullptr;
+#else
     Result (*shutdown)(VkDevice) = nullptr;
+#endif
+    Result shutdown_device(VkDevice device) const {
+#ifdef _WIN32
+        unsigned remaining = 0;
+        const auto result = shutdown(device, &remaining);
+        if (std::getenv("BBHOST_DLSS_LOG")) std::fprintf(stderr, "DLSS: NGX shutdown status=0x%08x; remaining initializations=%u\n", result, remaining);
+        return result;
+#else
+        return shutdown(device);
+#endif
+    }
     template<class F> bool load(F& f, const char* name) {
 #ifdef _WIN32
         f = reinterpret_cast<F>(GetProcAddress(module, name));
@@ -249,8 +266,9 @@ struct DlssProvider::Impl {
                 if (std::getenv("BBHOST_DLSS_LOG")) std::fprintf(stderr, "DLSS: retiring capabilities %p\n", static_cast<void*>(p));
                 if (p) api->destroy(p);
                 if (std::getenv("BBHOST_DLSS_LOG")) std::fprintf(stderr, "DLSS: shutting down NGX device\n");
-                api->shutdown(d);
-                if (std::getenv("BBHOST_DLSS_LOG")) std::fprintf(stderr, "DLSS: NGX device shutdown complete\n");
+                const auto result = api->shutdown_device(d);
+                if (result != success) std::fprintf(stderr, "DLSS: NGX device shutdown failed (0x%08x)\n", result);
+                else if (std::getenv("BBHOST_DLSS_LOG")) std::fprintf(stderr, "DLSS: NGX device shutdown complete\n");
             });
         }
     }
