@@ -161,7 +161,7 @@ Resource resource(const UpscaleImage& i, bool depth, bool rw) {
 }
 bool sampled_layout(VkImageLayout l) { return l == VK_IMAGE_LAYOUT_GENERAL || l == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL || l == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL; }
 bool image_valid(const UpscaleImage& i, UpscaleExtent minimum) { return i.image && i.view && i.extent.width >= minimum.width && i.extent.height >= minimum.height; }
-bool color_format(VkFormat f) { return f == VK_FORMAT_R16G16B16A16_SFLOAT || f == VK_FORMAT_R32G32B32A32_SFLOAT || f == VK_FORMAT_R8G8B8A8_UNORM; }
+bool color_format(VkFormat f) { return f == VK_FORMAT_R16G16B16A16_SFLOAT || f == VK_FORMAT_R32G32B32A32_SFLOAT || f == VK_FORMAT_R8G8B8A8_UNORM || f == VK_FORMAT_B8G8R8A8_UNORM; }
 bool hdr_format(VkFormat f) { return f == VK_FORMAT_R16G16B16A16_SFLOAT || f == VK_FORMAT_R32G32B32A32_SFLOAT; }
 std::string loaded_model_version() {
 #ifdef _WIN32
@@ -195,7 +195,7 @@ bool dlss_frame_contract(const UpscaleConfig& c, const UpscaleFrame& f) {
         !std::isfinite(f.jitter.x) || !std::isfinite(f.jitter.y) || std::abs(f.jitter.x) > 0.5f || std::abs(f.jitter.y) > 0.5f) return false;
     if (!image_valid(f.color, c.render) || !image_valid(f.depth, c.render) || !image_valid(f.motion, c.render) || !image_valid(f.output, c.output)) return false;
     if (!color_format(f.color.format) || !color_format(f.output.format) ||
-        (f.depth.format != VK_FORMAT_D32_SFLOAT && f.depth.format != VK_FORMAT_D16_UNORM) ||
+        (f.depth.format != VK_FORMAT_D32_SFLOAT && f.depth.format != VK_FORMAT_D16_UNORM && f.depth.format != VK_FORMAT_D32_SFLOAT_S8_UINT) ||
         (f.motion.format != VK_FORMAT_R16G16_SFLOAT && f.motion.format != VK_FORMAT_R32G32_SFLOAT)) return false;
     if (!sampled_layout(f.color.layout) || !sampled_layout(f.depth.layout) || !sampled_layout(f.motion.layout) || f.output.layout != VK_IMAGE_LAYOUT_GENERAL) return false;
     if (f.output.image == f.color.image || f.output.image == f.depth.image || f.output.image == f.motion.image) return false;

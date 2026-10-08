@@ -41,6 +41,7 @@ struct Image {
     }
 };
 Image motion,output;std::shared_ptr<SceneMotionPass> pass;VkSampler sampler{};
+VkImageView depth_view{};VkImage viewed_depth{};
 SceneCameraHistory cameras;UpscaleHistory history;
 UpscaleImage image(const RtImage& r) {return {r.image,r.view,r.format,VK_IMAGE_LAYOUT_GENERAL,{r.width,r.height}};}
 void dependency(VkCommandBuffer cmd,VkAccessFlags src,VkAccessFlags dst,VkPipelineStageFlags from,VkPipelineStageFlags to) {
@@ -66,12 +67,22 @@ bool scene_resolve_locked(UpscalerProvider& provider,const SceneCamera& camera,s
         if(vkCreateSampler(g.device,&c,nullptr,&sampler)!=VK_SUCCESS) return false;
     }
     const auto set=alloc_set_locked(pass->descriptor_layout());if(!set) return false;
+    if(viewed_depth!=depth.image) {
+        if(depth_view) defer_destroy_private_view(depth_view);depth_view={};viewed_depth={};
+        VkImageViewCreateInfo v{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};v.image=depth.image;v.viewType=VK_IMAGE_VIEW_TYPE_2D;v.format=depth.format;
+        // An attachment view may contain both Z and stencil. A sampled depth
+        // view must select Z alone; never substitute the color snapshot's R32.
+        v.subresourceRange={VK_IMAGE_ASPECT_DEPTH_BIT,0,1,0,1};
+        if(vkCreateImageView(g.device,&v,nullptr,&depth_view)!=VK_SUCCESS) return false;
+        viewed_depth=depth.image;
+    }
     const auto commands=g_cmd();motion.writable(commands);output.writable(commands);
     dependency(commands,VK_ACCESS_MEMORY_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
     SceneMatrix reprojection;const auto reset=cameras.prepare(camera,frame,config.resource_epoch,reprojection);
-    if(!pass->record(commands,set,sampler,image(depth),motion.image,extent,reprojection,jitter)) return false;
+    auto depth_input=image(depth);depth_input.view=depth_view;
+    if(!pass->record(commands,set,sampler,depth_input,motion.image,extent,reprojection,jitter)) return false;
     dependency(commands,VK_ACCESS_SHADER_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-    UpscaleFrame inputs;inputs.commands=commands;inputs.color=image(color);inputs.depth=image(depth);inputs.motion=motion.image;inputs.output=output.image;
+    UpscaleFrame inputs;inputs.commands=commands;inputs.color=image(color);inputs.depth=depth_input;inputs.motion=motion.image;inputs.output=output.image;
     inputs.input_area=inputs.output_area={{0,0},{extent.width,extent.height}};inputs.stage=UpscaleStage::SceneBeforeUI;
     inputs.jitter=jitter;inputs.engine_jitter_applied=true;inputs.delta_seconds=1.0f/60;
     history.invalidate(reset);inputs.reset=history.begin(config);
@@ -86,6 +97,7 @@ bool scene_resolve_locked(UpscalerProvider& provider,const SceneCamera& camera,s
 void scene_resolve_shutdown_locked() {
     if(!pass && !sampler && !motion.image.image && !output.image.image) return;
     render_end_pass_locked();begin_recording_locked();motion.retire();output.retire();
+    if(depth_view) defer_destroy_private_view(depth_view);depth_view={};viewed_depth={};
     auto keep=std::move(pass);const auto old=sampler;sampler={};const auto device=g.device;
     g.slots[g.slot].retire_functions.push_back([keep=std::move(keep),old,device]{if(old) vkDestroySampler(device,old,nullptr);});
     cameras.clear();history.invalidate(HistoryReset::Load);

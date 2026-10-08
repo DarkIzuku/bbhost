@@ -66,7 +66,7 @@ struct Image {
     void barrier(VkPipelineStageFlags src, VkAccessFlags access, VkPipelineStageFlags dst, VkAccessFlags next) {
         VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER}; b.srcAccessMask = access; b.dstAccessMask = next;
         b.oldLayout = image.layout; b.newLayout = VK_IMAGE_LAYOUT_GENERAL; b.image = image.image;
-        b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; b.subresourceRange = {aspect, 0, 1, 0, 1};
+        b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; b.subresourceRange = {aspect | (image.format==VK_FORMAT_D32_SFLOAT_S8_UINT ? VK_IMAGE_ASPECT_STENCIL_BIT : 0u), 0, 1, 0, 1};
         vkCmdPipelineBarrier(d.commands, src, dst, 0, 0, nullptr, 0, nullptr, 1, &b); image.layout = VK_IMAGE_LAYOUT_GENERAL;
     }
     void clear(std::array<float, 4> rgba) {
@@ -88,7 +88,9 @@ float half(unsigned short h) {
     return h & 0x8000 ? -v : v;
 }
 void read_output(Device& d, Image& output) {
-    const VkDeviceSize bytes = static_cast<VkDeviceSize>(output.image.extent.width) * output.image.extent.height * 8;
+    const bool bgra=output.image.format==VK_FORMAT_B8G8R8A8_UNORM;
+    const VkDeviceSize pixel_bytes=bgra ? 4 : 8;
+    const VkDeviceSize bytes = static_cast<VkDeviceSize>(output.image.extent.width) * output.image.extent.height * pixel_bytes;
     VkBuffer buffer{}; VkDeviceMemory memory{};
     VkBufferCreateInfo b{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO}; b.size = bytes; b.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     vk_check(vkCreateBuffer(d.device, &b, nullptr, &buffer), "create readback");
@@ -103,20 +105,21 @@ void read_output(Device& d, Image& output) {
     void* data = nullptr; vk_check(vkMapMemory(d.device, memory, 0, bytes, 0, &data), "map readback");
     auto values = static_cast<const unsigned short*>(data); unsigned bad = 0; float largest_error = 0;
     const float wanted[3] = {0.25f, 0.5f, 0.75f};
-    for (VkDeviceSize i = 0; i < bytes / 8; ++i) for (unsigned c = 0; c < 3; ++c) {
-        const auto v = half(values[i * 4 + c]); if (!std::isfinite(v)) ++bad; else largest_error = std::max(largest_error, std::abs(v - wanted[c]));
+    for (VkDeviceSize i = 0; i < bytes / pixel_bytes; ++i) for (unsigned c = 0; c < 3; ++c) {
+        const auto v = bgra ? static_cast<const unsigned char*>(data)[i*4+2-c]/255.0f : half(values[i * 4 + c]); if (!std::isfinite(v)) ++bad; else largest_error = std::max(largest_error, std::abs(v - wanted[c]));
     }
     vkUnmapMemory(d.device, memory); vkDestroyBuffer(d.device, buffer, nullptr); vkFreeMemory(d.device, memory, nullptr);
     std::printf("DLSS output: %ux%u, nonfinite=%u, maximum color error=%g\n", output.image.extent.width, output.image.extent.height, bad, largest_error);
     if (bad || largest_error > 0.08f) throw std::runtime_error("DLSS synthetic output failed readback validation");
 }
-void run_mode(Device& d, DlssProvider& provider, UpscaleExtent render, UpscaleExtent out, UpscalePreset preset) {
+void run_mode(Device& d, DlssProvider& provider, UpscaleExtent render, UpscaleExtent out, UpscalePreset preset,bool native_formats=false) {
     DlssOptimalSettings optimal;
     if (!provider.optimal_settings(out, preset, optimal)) throw std::runtime_error(provider.problem());
     render = optimal.render;
     std::printf("DLSS optimal: %ux%u -> %ux%u, range %ux%u .. %ux%u\n", render.width, render.height, out.width, out.height,
                 optimal.minimum.width, optimal.minimum.height, optimal.maximum.width, optimal.maximum.height);
-    Image color(d, VK_FORMAT_R16G16B16A16_SFLOAT, render), depth(d, VK_FORMAT_D32_SFLOAT, render, true), motion(d, VK_FORMAT_R16G16_SFLOAT, render), output(d, VK_FORMAT_R16G16B16A16_SFLOAT, out);
+    const auto format=native_formats ? VK_FORMAT_B8G8R8A8_UNORM : VK_FORMAT_R16G16B16A16_SFLOAT;
+    Image color(d,format,render),depth(d,native_formats ? VK_FORMAT_D32_SFLOAT_S8_UINT : VK_FORMAT_D32_SFLOAT,render,true),motion(d,VK_FORMAT_R16G16_SFLOAT,render),output(d,format,out);
     UpscaleConfig config; config.provider = UpscalerId::Dlss; config.preset = preset; config.render = render; config.output = out;
     UpscaleHistory history;
     for (unsigned frame = 0; frame < 16; ++frame) {
@@ -181,10 +184,12 @@ int main(int argc, char** argv) {
             } else {
             run_mode(d, provider, {1280, 720}, {1920, 1080}, UpscalePreset::Quality);
             run_mode(d, provider, {960, 540}, {1920, 1080}, UpscalePreset::Performance);
+            run_mode(d, provider, {1114, 626}, {1920, 1080}, UpscalePreset::Balanced);
             run_mode(d, provider, {1920, 1080}, {1920, 1080}, UpscalePreset::NativeAA);
             run_mode(d, provider, {1706, 960}, {2560, 1440}, UpscalePreset::Quality);
             run_mode(d, provider, {1280, 720}, {3840, 2160}, UpscalePreset::UltraPerformance);
             run_mode(d, provider, {1706, 720}, {2560, 1080}, UpscalePreset::Quality);
+            run_mode(d, provider, {1920, 1080}, {1920, 1080}, UpscalePreset::NativeAA,true);
             }
         }
         if (lifecycle_only) {
@@ -193,7 +198,7 @@ int main(int argc, char** argv) {
             std::thread([&] { d.retire(); }).join();
             std::printf("DLSS lifecycle: initialized, optimal size queried, retired on another thread (%u retirements). No scene or synthetic frames dispatched.\n", d.retirement_count);
         } else {
-            d.retire(); std::printf("DLSS integration: 96 synthetic frames passed, DLAA/resolution/reset/retirement checked (%u retirements). Game dispatch is not enabled.\n", d.retirement_count);
+            d.retire(); std::printf("DLSS integration: 128 synthetic frames passed, all quality modes/native BGRA+D32S8/reset/retirement checked (%u retirements). Synthetic tests do not certify game dispatch.\n", d.retirement_count);
         }
         return 0;
     } catch (const std::exception& e) { std::fprintf(stderr, "DLSS integration failed: %s\n", e.what()); return 1; }

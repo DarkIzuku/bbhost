@@ -13,6 +13,8 @@ int main() {
     f.motion = image(4, VK_FORMAT_R16G16_SFLOAT, c.render); f.output = image(5, VK_FORMAT_R16G16B16A16_SFLOAT, c.output);
     f.input_area.extent = {c.render.width, c.render.height}; f.output_area.extent = {c.output.width, c.output.height};
     check(dlss_frame_contract(c, f), "valid scene contract");
+    auto native_formats=f;native_formats.color.format=native_formats.output.format=VK_FORMAT_B8G8R8A8_UNORM;native_formats.depth.format=VK_FORMAT_D32_SFLOAT_S8_UINT;
+    check(dlss_frame_contract(c,native_formats),"native bbhost BGRA scene and sampled Z plane of D32S8");
     auto bad = f; bad.stage = UpscaleStage::CompositePresentation; check(!dlss_frame_contract(c, bad), "reject HUD/Scaleform composite");
     bad = f; bad.engine_jitter_applied = false; check(!dlss_frame_contract(c, bad), "reject unverified engine jitter");
     bad = f; bad.motion.image = VK_NULL_HANDLE; check(!dlss_frame_contract(c, bad), "reject absent engine motion");
