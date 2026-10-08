@@ -1,0 +1,34 @@
+#version 450
+// Native scene camera reprojection, in unjittered previous-current render
+// pixels. This pass supplies camera motion only; moving objects need their
+// own previous transform/pose contribution before temporal scene dispatch.
+layout(set=0, binding=0) uniform texture2D scene_depth;
+layout(set=0, binding=1) uniform sampler scene_sampler;
+layout(set=0, binding=2, rg16f) uniform writeonly image2D motion;
+layout(push_constant) uniform Constants {
+    vec4 previous_from_current_rows[4];
+    uvec2 extent;
+    vec2 jitter_pixels;
+};
+layout(local_size_x=8, local_size_y=8) in;
+void main() {
+    uvec2 p=gl_GlobalInvocationID.xy;
+    if(any(greaterThanEqual(p,extent))) return;
+    float depth=texelFetch(sampler2D(scene_depth,scene_sampler),ivec2(p),0).r;
+    vec2 uv=(vec2(p)+0.5-jitter_pixels)/vec2(extent);
+    vec4 current=vec4(2*uv.x-1,1-2*uv.y,depth,1);
+    vec4 previous=vec4(dot(previous_from_current_rows[0],current),
+                       dot(previous_from_current_rows[1],current),
+                       dot(previous_from_current_rows[2],current),
+                       dot(previous_from_current_rows[3],current));
+    vec2 velocity=vec2(0);
+    if(depth>=0 && depth<=1 && previous.w>1e-6 && !any(isnan(previous)) && !any(isinf(previous))) {
+        vec2 previous_uv=vec2(previous.x,-previous.y)/previous.w*0.5+0.5;
+        vec2 candidate=(previous_uv-uv)*vec2(extent);
+        // Half-float output must stay finite even for points behind the old
+        // camera, extreme disocclusion or invalid depth. Reset ownership is
+        // external; a rejected pixel does not make a valid temporal frame.
+        if(!any(isnan(candidate)) && !any(isinf(candidate)) && all(lessThanEqual(abs(candidate),vec2(65504)))) velocity=candidate;
+    }
+    imageStore(motion,ivec2(p),vec4(velocity,0,0));
+}
