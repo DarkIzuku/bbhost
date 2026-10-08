@@ -3,7 +3,9 @@
 Current priority from the user: **DLSS, then FSR 3.1, then FSR 4**. FSR 4.1.1
 and custom loading screens remain later stages. The NGX Vulkan backend is
 implemented and tested on actual hardware. **In-game DLSS is still not enabled**:
-the engine scene/depth/motion/jitter boundary has not been connected.
+the engine scene/depth/object-motion/jitter resolve has not been connected.
+Native-device initialization and GX camera extraction have now been verified
+in the real game; these are prerequisites, not completed scene evaluation.
 
 ## Verified sources and local runtime
 
@@ -55,8 +57,71 @@ its Instance, Scheduler, PM4, camera-register or image-cache hooks was ported.
   retain pending history resets for the next valid temporal frame. Diagnostics
   report NGX failure reasons; detailed retirement logs require `BBHOST_DLSS_LOG`.
 
-The backend is built into bbhost. It is not instantiated from an unverified
-engine hook and DLSS/DLAA choices are not advertised in the player UI yet.
+The backend is built into bbhost. Opt-in diagnostics initialize it on bbhost's
+actual Vulkan device, independently of scene hooks. DLSS/DLAA choices are not
+advertised in the player UI yet.
+
+## Native device and camera validation (October 7, 2026)
+
+`dlss_runtime.cpp` discovers requirements before instance/device creation,
+checks the selected device and initializes after native command slots exist.
+Enable this development check with `BBHOST_DLSS_INIT=1` or
+`upscaling.dlss_diagnostics=true`; local model search accepts
+`BBHOST_DLSS_MODEL_PATH` or `upscaling.dlss_model_dir`. The cache lives under
+the configured data directory. It never installs a temporal provider at the
+post-Scaleform presentation boundary. Features, capabilities, retained init
+storage and device shutdown retire through bbhost's ordered slot fences.
+
+A native-game exit check found a Windows driver-binding error that the earlier
+synthetic run had concealed: the driver's `NVSDK_NGX_VULKAN_Shutdown1` takes
+**device plus an output for the remaining initialization count**. The public
+SDK wrapper takes only device. Calling the driver with the SDK prototype left
+RDX unspecified and could write through null or an unrelated pointer. The
+binding now supplies owned output storage and logs result/count. This was
+cross-checked locally against NVIDIA's official SDK wrapper and the installed
+driver; no SDK library or driver bytes were added to this repository.
+`dlss_probe ... --lifecycle-only` exercises init, optimal-size query and
+retirement on another host thread without creating a feature.
+
+With the corrected ABI, the RTX 5070/617.14 passed both that lifecycle check
+and all 96 synthetic DLSS/DLAA frames again: shutdown result 1, remaining
+initializations 0. The Actions-built `ebc2299` runtime also ran 900 real game
+flips, loaded the isolated Hunter's Dream save, rotated the camera and retired
+NGX without a crash (exit 0). Source saves remained byte-identical. This run
+initialized NGX and queried 1080p Quality's 1280x720 input; **it did not
+evaluate any Bloodborne frame through DLSS**.
+
+`scene_motion.cpp` decodes the primary native GX Scene constant buffer, gated
+on multiple G-buffer attachments, depth and the full scene viewport. In the
+verified 1.09 layout, float words 183/187/191 hold world origin and 200..215
+hold the camera-relative clip transform. The orthonormal basis at 180..191,
+perspective W row, finite values and invertibility must all validate.
+Reprojection includes current-origin minus previous-origin, which a simple
+matrix inverse would miss. The pure history helper detects missing frames,
+resource replacement, large translation and rotation. Engine area/load event
+hooks and persistent object/pose identity are still required.
+
+`BBHOST_TEMPORAL_AUDIT=1` observes real native/YEBIS/Scaleform tokens and camera
+continuity. The real camera rotation produced nonzero finite render-pixel
+motion (for example 15.49, 1.82 at the diagnostic center probe). Early loading
+frames can interleave offscreen UI with scene draws: this audit conservatively
+resets then, and does not certify a safe final scene/UI resolve boundary.
+
+`SceneMotionPass` is a Vulkan compute pass over caller-owned depth and RG16F
+motion images. It removes current jitter before reprojection, preserves pixel
+motion units/Y direction, rejects invalid projection pixels and leaves padded
+image regions untouched. It owns no allocator, command submission or idle
+wait; the scene owner must provide synchronization, per-submission descriptor
+sets and retirement. The device must enable extended storage image formats
+for RG16F. This pass currently computes **camera motion only**, and is not
+automatically inserted into the game's draw path.
+
+`scene_motion_probe` reads back every output pixel on the actual GPU. Static,
+near/far camera translation, current-jitter removal, yaw and points behind the
+previous camera all passed, including a 65x39 viewport in an 80x48 image.
+Maximum observed GPU-versus-CPU error was 0.00220 render pixels. Shader SPIR-V
+was generated with Khronos glslang 16.6.0 and validated for Vulkan 1.2. The
+diagnostic artifact includes the probe; the player build needs no compiler.
 
 ## Hardware and CI evidence
 
@@ -126,11 +191,11 @@ has composed UI. It is marked `CompositePresentation`; temporal providers
 are explicitly rejected there. A scene resolve must be inserted before UI,
 with YEBIS ordering validated rather than guessed.
 
-Native camera data exists: `live_resolution.cpp` already verifies the camera
-blend at `0x18368b0`; FOV/aspect/near/far are at `+0x50/+0x54/+0x58/+0x5c`.
-That hook alone does not identify the final projection/view matrices or their
-update timing. Do not inject jitter into it without verifying projection
-construction and ensuring HUD plate projection remains unjittered.
+Native scene matrices are now verified from GX constants, rather than guessed
+from the follow-camera hook. `scene_projection_jitter` produces a tested copy;
+it is not applied to game draws yet. Consistent jitter must cover scene
+geometry, depth reconstruction and deferred/post effects while keeping
+Scaleform, culling, shadows and HUD plate projection unjittered.
 
 GX draw tokens carry shaders, geometry, bound objects and uniform snapshots.
 `gx_resources` identities track resource lifetimes, not persistent character
