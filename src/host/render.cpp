@@ -68,6 +68,7 @@ struct TemporalScene {
 TemporalScene g_temporal_scene;
 std::uint64_t g_temporal_sequence=0;
 bool g_temporal_scene_failed=false;
+std::uint64_t g_temporal_arm_after=~0ull;
 thread_local bool t_scene_jitter=false;
 const bool g_temporal_graph_audit=[] {const char* e=std::getenv("BBHOST_TEMPORAL_AUDIT");return e && std::strcmp(e,"1")==0;}();
 
@@ -1948,7 +1949,9 @@ bool scene_draw_prepare_locked(const GpuDraw& d,const DrawState& s,const KeyStag
         const std::uint64_t depth[]={s.depth->base};frame.graph.seed(depth);
     }
     static std::uint64_t trace_frame=~0ull;
-    if(g_temporal_graph_audit && frame.camera_valid && trace_frame==~0ull) trace_frame=flip;
+    // Loading can submit an incomplete first G-buffer. Trace a subsequent
+    // established scene even if temporal evaluation has not been armed yet.
+    if(g_temporal_graph_audit && frame.primary_count>=100 && trace_frame==~0ull) trace_frame=flip;
     if(g_temporal_graph_audit && flip==trace_frame && (kind!=ScenePassKind::Engine || (!s.depth && writes.size()==1))) {
         std::string trace;
         for(auto r:reads) {char b[64];std::snprintf(b,sizeof(b)," 0x%llx:%s",static_cast<unsigned long long>(r),frame.graph.scene_owned(r)?"scene":frame.graph.ui_owned(r)?"UI":"unknown");trace+=b;}
@@ -1966,6 +1969,8 @@ bool scene_draw_prepare_locked(const GpuDraw& d,const DrawState& s,const KeyStag
     if(boundary) {
         auto* color=find_render_target(boundary);auto* depth=find_render_target(frame.depth_base);
         bool resolved=false;
+        if(provider && frame.camera_valid && color && depth && depth->image==frame.depth_image && g_temporal_arm_after==~0ull)
+            g_temporal_arm_after=flip;
         if(provider && !g_temporal_scene_failed && frame.camera_valid && frame.jittered && color && depth && depth->image==frame.depth_image) {
             resolved=scene_resolve_locked(*provider,frame.camera,flip,frame.extent,*depth,*color,frame.jitter);
             frame.resolved=resolved;
@@ -1983,7 +1988,9 @@ bool scene_draw_prepare_locked(const GpuDraw& d,const DrawState& s,const KeyStag
                 static_cast<unsigned long long>(flip),d.gx_token_kind,static_cast<unsigned long long>(boundary),
                 static_cast<unsigned long long>(frame.depth_base),frame.jittered,frame.camera_valid?1u:0u,resolved?"DLAA":"audit/native");
     }
-    return provider && !g_temporal_scene_failed && full && kind==ScenePassKind::Engine &&
+    // Buffer validation also runs during the unjittered bootstrap/audit. Only
+    // a boundary proven in an earlier ordered frame permits projection jitter.
+    return (provider || g_temporal_graph_audit) && full && kind==ScenePassKind::Engine &&
         (frame.primary_draw || (s.color[0] && frame.graph.scene_owned(s.color[0]->base)));
 }
 
@@ -7887,16 +7894,18 @@ void resolve_stage_buffers(const gcn::TranslateResult& meta, const std::uint32_t
             if(source && scene_constants_jitter(source,sizeof(SceneConstants),frame.jitter,frame.extent,fields) &&
                std::fabs(fields[4]-frame.extent.width)<1 && std::fabs(fields[5]-frame.extent.height)<1) {
                 SceneCamera camera;
-                if(frame.primary_draw && !frame.camera_valid && scene_camera_decode(source,sizeof(SceneConstants),camera)) {
+                if(!frame.camera_valid && scene_camera_decode(source,sizeof(SceneConstants),camera)) {
                     frame.camera=camera;frame.camera_valid=true;
                 }
-                DevBuffer clone;VkDeviceSize offset=0;
-                const auto align=std::max<VkDeviceSize>(g.ssbo_align,16);
-                if(acquire_staging_locked(clone,sizeof(fields)+align-1,offset)) {
-                    const auto aligned=(offset+align-1)&~(align-1);
-                    std::memcpy(static_cast<std::uint8_t*>(clone.map)+(aligned-offset),fields.data(),sizeof(fields));
-                    info={clone.buffer,aligned,sizeof(fields)};params.cb_bias_dw[i]=0;++frame.jittered;
-                } else g_temporal_scene_failed=true;
+                if(dlss_runtime_scene_locked() && !g_temporal_scene_failed && g_temporal_arm_after!=~0ull && frame.flip>g_temporal_arm_after) {
+                    DevBuffer clone;VkDeviceSize offset=0;
+                    const auto align=std::max<VkDeviceSize>(g.ssbo_align,16);
+                    if(acquire_staging_locked(clone,sizeof(fields)+align-1,offset)) {
+                        const auto aligned=(offset+align-1)&~(align-1);
+                        std::memcpy(static_cast<std::uint8_t*>(clone.map)+(aligned-offset),fields.data(),sizeof(fields));
+                        info={clone.buffer,aligned,sizeof(fields)};params.cb_bias_dw[i]=0;++frame.jittered;
+                    } else g_temporal_scene_failed=true;
+                }
             }
         }
         ++outcomes[outcome];

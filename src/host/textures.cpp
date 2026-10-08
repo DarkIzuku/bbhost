@@ -3201,6 +3201,12 @@ bool textures_copy_image_region_locked(const GpuImageCopy& c) {
     }
     g_image_copies.fetch_add(1, std::memory_order_relaxed);
     g_image_copy_texels.fetch_add(static_cast<std::uint64_t>(c.w) * c.h, std::memory_order_relaxed);
+    // GX copy-image tokens are native resource transfers, just like compute
+    // and render-target copies. Preserve their source content provenance.
+    if(scene_tracking_locked()) {
+        const std::uint64_t reads[]={tsharp_base(c.src_tsharp)},writes[]={tsharp_base(c.dst_tsharp)};
+        scene_dispatch_observe_locked(reads,writes);
+    }
     return true;
 }
 
