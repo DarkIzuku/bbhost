@@ -10,6 +10,7 @@
 #include "host/gpu_internal.h"
 #include "host/shader_patch.h"
 #include "host/upscaler.h"
+#include "host/scene_motion.h"
 #include "host/settings.h"
 #include "host/tess_lds.h"
 
@@ -12471,6 +12472,73 @@ static bool draw_impl(const GpuDraw& d) {
         }
     }
     CapturePtr capture_session;
+    // Read-only native-scene audit. Establish actual camera continuity and
+    // token order before any temporal resolve is allowed to consume the
+    // frame. Off normally; no GPU copies or per-frame waits when enabled.
+    static const bool temporal_audit = [] {
+        const char* e=std::getenv("BBHOST_TEMPORAL_AUDIT"); return e && std::strcmp(e,"1")==0;
+    }();
+    if (temporal_audit) {
+        struct Audit {
+            std::uint64_t flip=~0ull, scene_target=0, depth_target=0, epoch=0, ui_target=0, last_yebis_target=0;
+            std::uint32_t native=0,yebis=0,ui=0;
+            bool found=false,scene_after_ui=false;
+            SceneCamera camera;
+            UpscaleExtent extent;
+            SceneMatrix reprojection{};
+            HistoryReset reset=HistoryReset::FirstFrame;
+        };
+        static Audit a;
+        static SceneCameraHistory cameras;
+        static unsigned logged=0;
+        const auto flip=hle_video_flip_count();
+        if(a.flip!=flip) {
+            if(a.found) {
+                if(logged++<8 || a.flip%120==0) {
+                    TemporalSample center{};
+                    const bool valid=scene_camera_motion(a.reprojection,0.5f,0.5f,0.99f,
+                        a.extent,center);
+                    host_log("temporal-scene: flip=%llu camera=(%g,%g,%g) reset=%u native=%u yebis=%u scaleform=%u scene-after-ui=%u scene=0x%llx depth=0x%llx first-ui=0x%llx last-yebis=0x%llx camera-probe=%s(%g,%g)",
+                        static_cast<unsigned long long>(a.flip),a.camera.world_origin[0],a.camera.world_origin[1],a.camera.world_origin[2],static_cast<unsigned>(a.reset),a.native,a.yebis,a.ui,a.scene_after_ui?1u:0u,
+                        static_cast<unsigned long long>(a.scene_target),static_cast<unsigned long long>(a.depth_target),static_cast<unsigned long long>(a.ui_target),static_cast<unsigned long long>(a.last_yebis_target),valid?"finite":"unavailable",center.x,center.y);
+                }
+                // Audit history only. This does not advance UpscaleHistory or
+                // certify object motion, exposure or an actual DLSS dispatch.
+                if(!a.scene_after_ui) cameras.commit(a.camera,a.flip,a.epoch); else cameras.clear();
+            }
+            a=Audit{}; a.flip=flip;
+        }
+        const char* kind=d.gx_token_kind;
+        if(d.gx_token && kind && std::strcmp(kind,"scaleform")==0) {
+            if(!a.ui++) a.ui_target=s.color[0]?s.color[0]->base:0;
+        } else if(d.gx_token && kind && std::strcmp(kind,"yebis")==0) {
+            ++a.yebis; a.last_yebis_target=s.color[0]?s.color[0]->base:0;
+        } else if(d.gx_token && d.gx_render && kind && std::strcmp(kind,"native")==0) {
+            ++a.native;
+            const auto settings=host_settings();
+            // The main G-buffer has multiple color attachments and the full
+            // scene viewport. Shadow, post, menu and UI passes cannot qualify
+            // merely by having a similarly sized resource.
+            if(s.depth && s.color[0] && s.color[1] && s.color[2] && s.color[3] &&
+               std::fabs(std::fabs(s.vport[0]*2)-settings.res_width)<1 &&
+               std::fabs(std::fabs(s.vport[2]*2)-settings.res_height)<1) {
+                if(a.ui) a.scene_after_ui=true;
+                if(!a.found) {
+                    const auto& meta=pl.vs.meta();
+                    for(std::size_t k=0;k<meta.buffers.size();++k) {
+                        const auto& binding=meta.buffers[k]; const auto& range=buffer_infos[stage_first_buffer[0]+k];
+                        if(binding.pointer || binding.max_dw<216 || stage_params[0].cb_bias_dw[k] || range.range<216*sizeof(float)) continue;
+                        const auto* bytes=imported_bytes_locked(range.buffer,range.offset,216*sizeof(float),nullptr);
+                        if(!scene_camera_decode(bytes,216*sizeof(float),a.camera)) continue;
+                        a.found=true; a.scene_target=s.color[0]->base; a.depth_target=s.depth->base;
+                        a.extent={static_cast<std::uint32_t>(settings.res_width),static_cast<std::uint32_t>(settings.res_height)};
+                        a.epoch=reinterpret_cast<std::uintptr_t>(s.depth->image);
+                        a.reset=cameras.prepare(a.camera,flip,a.epoch,a.reprojection); break;
+                    }
+                }
+            }
+        }
+    }
     if (capture) {
         CaptureDraw cd;
         cd.pipeline = pl.name;

@@ -115,6 +115,7 @@ add_executable(bbhost
   src/host/launcher_bridge.cpp
   src/host/launcher_gpu.cpp
   src/host/upscale_policy.cpp
+  src/host/scene_motion.cpp
   src/host/updater.cpp
   src/host/update_verify.cpp
   src/host/bindings.cpp
@@ -342,6 +343,9 @@ if(UNIX)
   add_executable(upscale_policy_test tests/upscale_policy_test.cpp src/host/upscale_policy.cpp)
   target_include_directories(upscale_policy_test PRIVATE src)
   add_test(NAME upscale_policy_test COMMAND upscale_policy_test)
+  add_executable(scene_motion_test tests/scene_motion_test.cpp src/host/scene_motion.cpp)
+  target_include_directories(scene_motion_test PRIVATE src)
+  add_test(NAME scene_motion_test COMMAND scene_motion_test)
   find_package(Python3 COMPONENTS Interpreter QUIET)
   if(Python3_Interpreter_FOUND)
     add_test(NAME world_baseline_test COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/world_baseline_test.py)

@@ -38,6 +38,7 @@ run() {
 run sysv_va_test tests/sysv_va_test.cpp src/hle/sysv_va.cpp
 run game_installation_test tests/game_installation_test.cpp src/core/game_installation.cpp src/core/game_folders.cpp src/core/sfo.cpp src/core/sha256.cpp
 run upscale_policy_test tests/upscale_policy_test.cpp src/host/upscale_policy.cpp
+run scene_motion_test tests/scene_motion_test.cpp src/host/scene_motion.cpp
 run tess_lds_test tests/tess_lds_test.cpp src/host/tess_lds.cpp
 run debug_font_test -Iplugins/debug_menu -DBB_FONT14_PATH=\"plugins/debug_menu/font14.bin\" tests/debug_font_test.cpp
 run thunk_args tests/thunk_args.cpp src/core/thunk.cpp src/core/tls_rewrite.cpp src/core/portable.cpp src/hle/sysv_va.cpp src/host/main_wait.cpp
