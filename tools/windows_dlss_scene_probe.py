@@ -32,6 +32,7 @@ def main():
     p.add_argument('--dump-at-draw', default='', help='Native intermediate target readback: pipeline:occurrence:min-flip')
     p.add_argument('--resize-test', default='', help='Native quiet-point resize hook: flip:WIDTHxHEIGHT[,..]')
     p.add_argument('--scene-dlaa', action='store_true', help='Experimental pre-UI DLAA diagnostic')
+    p.add_argument('--preset', choices=['DLAA','Quality','Balanced','Performance','Ultra Performance'], default='DLAA')
     p.add_argument('--clean-effects', action='store_true', help='Disable game AA/blur/DOF/color fringing to isolate temporal artifacts')
     queues = p.add_mutually_exclusive_group()
     queues.add_argument('--single-present-queue', action='store_true', help='Overlay A/B diagnostic; use renderer queue for presentation')
@@ -73,7 +74,7 @@ def main():
                     '[update]\ncheck = false\n[plugins]\ndebug_menu = false\n', encoding='utf-8')
     options = config/'options.toml'
     options.write_text('[options]\nresolution = '+json.dumps(args.resolution)+'\nwindow_mode = "Windowed"\nframe_cap = '+
-                       json.dumps(args.cap)+'\nupscaler = "Native / Off"\n', encoding='utf-8')
+                       json.dumps(args.cap)+'\nupscaler = "Native / Off"\ndlss_preset = '+json.dumps(args.preset)+'\n', encoding='utf-8')
     if args.clean_effects:
         with options.open('a',encoding='utf-8') as file:
             file.write('motion_blur = "Off"\ndepth_of_field = "Off"\nchromatic_aberration = "Off"\nanti_alias = "Off"\n')
@@ -110,14 +111,15 @@ def main():
         if any(digest(f) != original[f.name] for f in files):
             raise RuntimeError('Original save changed')
     text = log_path.read_text(encoding='utf-8', errors='replace')
-    resolved = [int(n) for n in re.findall(r'temporal-boundary: GX flip=(\d+)[^\n]*resolve=DLAA', text)]
+    resolved = [int(n) for n in re.findall(r'temporal-boundary: GX flip=(\d+)[^\n]*resolve=(?:DLAA|DLSS)', text)]
     versions = sorted(set(re.findall(r'loaded model file version=([^;\s]+)', text)))
     totals = re.findall(r'DLSS: scene evaluations=(\d+); history resets=(\d+)',text)
     temporal_failures = [line for line in text.splitlines() if
                          'scene ended without a verified temporal resolve' in line or
                          ('temporal-boundary:' in line and 'jittered-CBs=0' not in line and
                           'resolve=audit/native' in line)]
-    result = dict(exit_code=code, original_saves_unchanged=True, scene_dlaa=args.scene_dlaa,
+    result = dict(exit_code=code, original_saves_unchanged=True, scene_dlaa=args.scene_dlaa, preset=args.preset,
+                  features=re.findall(r'DLSS: feature ([^\n]+)',text),
                   logged_scene_evaluations=len(resolved), logged_scene_frames=resolved, loaded_model_versions=versions,
                   captures=[f.name for f in sorted((root/'build').glob('frame-*'))],
                   temporal_failures=temporal_failures,

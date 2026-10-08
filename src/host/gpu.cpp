@@ -4142,6 +4142,14 @@ bool host_gpu_init(const char* const* instance_exts, std::uint32_t n_exts, bool 
     return init_locked();
 }
 
+bool host_gpu_scene_size(unsigned ow,unsigned oh,unsigned* rw,unsigned* rh) {
+    std::lock_guard<GpuMutex> lock(g.mu);
+    if(!init_locked()) return false;
+    gpu::UpscaleExtent render;gpu::UpscalePreset preset;
+    if(!gpu::dlss_runtime_scene_size_locked({ow,oh},render,preset)) return false;
+    *rw=render.width;*rh=render.height;return true;
+}
+
 bool host_gpu_memory_tight() {
     if (const int t = g_tight.load(); t >= 0) return t == 1;
     bool tight = false;

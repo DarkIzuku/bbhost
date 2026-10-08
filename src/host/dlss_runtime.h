@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <vulkan/vulkan.h>
+#include "host/upscale_policy.h"
 
 namespace gpu {
 class UpscalerProvider;
@@ -12,4 +13,5 @@ void dlss_runtime_device_locked(VkInstance, VkPhysicalDevice, std::vector<const 
 void dlss_runtime_initialize_locked(VkInstance, VkPhysicalDevice, VkDevice);
 bool dlss_runtime_shutdown_locked();
 UpscalerProvider* dlss_runtime_scene_locked();
+bool dlss_runtime_scene_size_locked(UpscaleExtent output, UpscaleExtent& render, UpscalePreset& preset);
 }

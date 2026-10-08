@@ -61,7 +61,7 @@ struct TemporalScene {
     ScenePassGraph graph;
     std::uint64_t flip=~0ull,depth_base=0;
     VkImage depth_image=VK_NULL_HANDLE;
-    UpscaleExtent extent;SceneCamera camera;
+    UpscaleExtent extent;UpscaleConfig config;SceneCamera camera;
     TemporalSample jitter;
     bool camera_valid=false,primary_draw=false,graphics_dirty=false,resolved=false;
     unsigned jittered=0,raster_jittered=0,primary_count=0,full_count=0,draw_count=0,reads_count=0,scene_reads=0,ui_count=0;
@@ -1934,9 +1934,16 @@ bool scene_draw_prepare_locked(const GpuDraw& d,const DrawState& s,const KeyStag
         live_resolution_current(&live_width,&live_height);
         if(live_width && live_height) {width=live_width;height=live_height;}
         frame.extent={width,height};
-        frame.jitter=temporal_jitter(flip,8);
+        frame.config.render=frame.config.output=frame.extent;
+        frame.config.preset=UpscalePreset::NativeAA;frame.config.fullscreen=settings.fullscreen;
+        if(provider) dlss_runtime_scene_size_locked(frame.config.output,frame.extent,frame.config.preset);
+        frame.config.render=frame.extent;
+        const float ratio=static_cast<float>(height)/std::max(frame.extent.height,1u);
+        frame.jitter=temporal_jitter(flip,static_cast<unsigned>(std::ceil(8*ratio*ratio)));
     }
-    const bool full=std::fabs(std::fabs(s.vport[0]*2)-frame.extent.width)<1 && std::fabs(std::fabs(s.vport[2]*2)-frame.extent.height)<1;
+    const auto viewport_matches=[&](UpscaleExtent e) {return std::fabs(std::fabs(s.vport[0]*2)-e.width)<1 && std::fabs(std::fabs(s.vport[2]*2)-e.height)<1;};
+    const bool render_full=viewport_matches(frame.extent);
+    const bool full=render_full || viewport_matches(frame.config.output);
     std::vector<std::uint64_t> reads,writes;
     for(int st=0;st<2;++st) for(const auto& binding:stages[st]->images) {
         // Use the engine's resource identity, before prefetch creates a
@@ -1952,7 +1959,7 @@ bool scene_draw_prepare_locked(const GpuDraw& d,const DrawState& s,const KeyStag
         ++frame.draw_count;frame.full_count+=full;frame.reads_count+=reads.size();frame.ui_count+=kind==ScenePassKind::Scaleform;
         for(auto r:reads) frame.scene_reads+=frame.graph.scene_owned(r);
     }
-    frame.primary_draw=kind==ScenePassKind::Engine && d.gx_render && full && s.depth && s.color[0] && s.color[1] && s.color[2] && s.color[3];
+    frame.primary_draw=kind==ScenePassKind::Engine && d.gx_render && render_full && s.depth && s.color[0] && s.color[1] && s.color[2] && s.color[3];
     if(frame.primary_draw) {
         ++frame.primary_count;
         frame.depth_base=s.depth->base;frame.depth_image=s.depth->image;frame.graph.seed(writes);
@@ -1982,7 +1989,7 @@ bool scene_draw_prepare_locked(const GpuDraw& d,const DrawState& s,const KeyStag
         if(provider && frame.camera_valid && color && depth && depth->image==frame.depth_image && g_temporal_arm_after==~0ull)
             g_temporal_arm_after=flip;
         if(provider && !g_temporal_scene_failed && frame.camera_valid && frame.raster_jittered && color && depth && depth->image==frame.depth_image) {
-            resolved=scene_resolve_locked(*provider,frame.camera,flip,frame.extent,*depth,*color,frame.jitter);
+            resolved=scene_resolve_locked(*provider,frame.camera,flip,frame.config,*depth,*color,frame.jitter);
             frame.resolved=resolved;
             frame.graphics_dirty=true;
         }
@@ -1996,11 +2003,11 @@ bool scene_draw_prepare_locked(const GpuDraw& d,const DrawState& s,const KeyStag
         if(logged++<8 || flip%120==0 || (provider && !resolved))
             host_log("temporal-boundary: GX flip=%llu kind=%s scene=0x%llx depth=0x%llx jittered-CBs=%u jittered-draws=%u camera=%u resolve=%s",
                 static_cast<unsigned long long>(flip),d.gx_token_kind,static_cast<unsigned long long>(boundary),
-                static_cast<unsigned long long>(frame.depth_base),frame.jittered,frame.raster_jittered,frame.camera_valid?1u:0u,resolved?"DLAA":"audit/native");
+                static_cast<unsigned long long>(frame.depth_base),frame.jittered,frame.raster_jittered,frame.camera_valid?1u:0u,resolved?(frame.config.preset==UpscalePreset::NativeAA?"DLAA":"DLSS"):"audit/native");
     }
     // Buffer validation also runs during the unjittered bootstrap/audit. Only
     // a boundary proven in an earlier ordered frame permits projection jitter.
-    const bool eligible=(provider || g_temporal_graph_audit) && full && kind==ScenePassKind::Engine &&
+    const bool eligible=(provider || g_temporal_graph_audit) && render_full && kind==ScenePassKind::Engine &&
         (frame.primary_draw || (s.color[0] && frame.graph.scene_owned(s.color[0]->base)));
     t_scene_armed=eligible && provider && !g_temporal_scene_failed && !frame.resolved &&
         g_temporal_arm_after!=~0ull && flip>g_temporal_arm_after;
@@ -7416,6 +7423,14 @@ void prefetch_stage_images(const gcn::TranslateResult& meta, const std::uint32_t
             }
         }
         if (im.resolved) {
+            // The scene provider produced a separate native-sized image.
+            // Substitute its sampled view before any RT snapshot is made;
+            // input GX resources and all UI resources retain their identity.
+            if(!b.storage && !b.depth && !b.r128 && !b.arrayed) {
+                if(const auto scene_view=scene_resolve_view_locked(tsharp_base(im.w),g_temporal_sequence)) {
+                    im.view=scene_view;im.dim=b.dim;im.arrayed=false;continue;
+                }
+            }
             bool ok;
             const GxBindingPlan* bp = plan && k < plan->images.size() ? &plan->images[k] : nullptr;
             const std::uint32_t id = bp && bp->source == GxBindingPlan::kTex && ((gx->obj_tex_set >> bp->slot) & 1) ? gx->obj_tex_id[bp->slot] : 0;

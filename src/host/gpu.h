@@ -235,6 +235,9 @@ bool host_gpu_device_lost();
 // memory_tight; a Steam Deck does). Callable before host_gpu_init: the guest
 // patches size the render targets' heap by it.
 bool host_gpu_memory_tight();
+// Query the active temporal provider's native GX scene size. Called from the
+// engine's initialization/resize thread, outside GPU recording and its lock.
+bool host_gpu_scene_size(unsigned output_width, unsigned output_height, unsigned* render_width, unsigned* render_height);
 // Queues one compute dispatch. Returns false when the shader could not be
 // translated or queued (the caller logs and continues). Queued work runs at
 // the next host_gpu_flush().

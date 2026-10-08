@@ -94,4 +94,16 @@ UpscalerProvider* dlss_runtime_scene_locked() {
     const char* scene=std::getenv("BBHOST_DLSS_SCENE");
     return scene && std::string(scene)=="1" && provider && provider->available() ? provider.get() : nullptr;
 }
+bool dlss_runtime_scene_size_locked(UpscaleExtent output, UpscaleExtent& render, UpscalePreset& preset) {
+    if(!dlss_runtime_scene_locked()) return false;
+    preset=host_settings().dlss_preset;
+    static UpscaleExtent previous_output,previous_render;
+    static UpscalePreset previous_preset=UpscalePreset::Custom;
+    if(output==previous_output && preset==previous_preset) {render=previous_render;return true;}
+    DlssOptimalSettings optimal;
+    if(!provider->optimal_settings(output,preset,optimal)) return false;
+    previous_output=output;previous_render=render=optimal.render;previous_preset=preset;
+    host_log("DLSS: GX scene plan preset=%u render=%ux%u output=%ux%u",static_cast<unsigned>(preset),render.width,render.height,output.width,output.height);
+    return true;
+}
 }

@@ -646,6 +646,25 @@ bool install_scene_target_size_check() {
     return code_write(kSceneColorWidth, code, sizeof(code));
 }
 
+// The graphics manager initializes its main context at gm+0x60. Its second
+// context at gm+0x2c60 is a fixed 128x128 auxiliary and must keep that size.
+// Reinitialize also enters Initialize, so this owns both startup and resize.
+// Change the engine descriptor, letting GX allocate its own scene/depth and
+// dependent targets. Display buffers, output entry and Scaleform stay native.
+GUEST_ABI std::int64_t scene_initialize_hook(std::uint64_t,const std::uint64_t* saved) {
+    const auto ctx=saved[5],desc=saved[4],gm=saved[3];
+    if(!gm || ctx!=gm+0x60 || !desc) return 0;
+    const auto ow=at_<std::uint32_t>(desc),oh=at_<std::uint32_t>(desc+4);
+    unsigned rw=ow,rh=oh;
+    if(!host_gpu_scene_size(ow,oh,&rw,&rh) || (rw==ow && rh==oh)) return 0;
+    alignas(32) static thread_local std::uint8_t scene_desc[0x40];
+    std::memcpy(scene_desc,reinterpret_cast<const void*>(static_cast<std::uintptr_t>(desc)),sizeof(scene_desc));
+    std::memcpy(scene_desc,&rw,4);std::memcpy(scene_desc+4,&rh,4);
+    const_cast<std::uint64_t*>(saved)[4]=reinterpret_cast<std::uintptr_t>(scene_desc);
+    host_log("DLSS: GX primary scene %ux%u -> %ux%u; native display/UI retained",ow,oh,rw,rh);
+    return 0;
+}
+
 // ---- DefDepthStencil at the render size -----------------------------------------
 //
 // The GX init makes DefDepthStencil (the output entry's +0x70) at the size
@@ -1109,6 +1128,9 @@ bool live_resolution_install(ElfImage* image) {
         return false;
     }
     host_log("resolution: scene target reuse requires matching width and height");
+    static const std::uint8_t scene_init_pro[] = {0x55,0x48,0x89,0xe5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x81,0xe4,0xe0,0xff,0xff,0xff};
+    if(!engine_prologue_hook(image,guest(0x26c39f0),scene_init_pro,sizeof(scene_init_pro),reinterpret_cast<void*>(&scene_initialize_hook)))
+        host_log("DLSS: GX scene Initialize hook unavailable; temporal upscaling cannot change scene size");
     if (!pin_display_read(image, kGxInitWidthRead, kResWidth, g_display[0]) ||
         !pin_display_read(image, kGxInitHeightRead, kResHeight, g_display[1])) {
         host_log("resolution: refused, the GX init's display size reads are not as expected; changes wait for the next run");

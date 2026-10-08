@@ -49,25 +49,24 @@ std::chrono::steady_clock::time_point last_scene;
 VkImage last_depth{},last_color{};
 std::uint64_t resource_epoch=0;
 std::uint64_t scene_evaluations=0,history_resets=0;
+std::uint64_t resolved_source=0,resolved_frame=~0ull;
 UpscaleImage image(const RtImage& r) {return {r.image,r.view,r.format,VK_IMAGE_LAYOUT_GENERAL,{r.width,r.height}};}
 void dependency(VkCommandBuffer cmd,VkAccessFlags src,VkAccessFlags dst,VkPipelineStageFlags from,VkPipelineStageFlags to) {
     VkMemoryBarrier b{VK_STRUCTURE_TYPE_MEMORY_BARRIER};b.srcAccessMask=src;b.dstAccessMask=dst;
     vkCmdPipelineBarrier(cmd,from,to,0,1,&b,0,nullptr,0,nullptr);
 }
 }
-bool scene_resolve_locked(UpscalerProvider& provider,const SceneCamera& camera,std::uint64_t frame,UpscaleExtent extent,
+bool scene_resolve_locked(UpscalerProvider& provider,const SceneCamera& camera,std::uint64_t frame,const UpscaleConfig& requested,
     RtImage& depth,RtImage& color,TemporalSample jitter) {
+    const auto extent=requested.render;
     if(!provider.temporal() || !scene_camera_valid(camera) || !depth.initialised || !color.initialised ||
        depth.width<extent.width || depth.height<extent.height || color.width<extent.width || color.height<extent.height) return false;
     render_end_pass_locked();begin_recording_locked();
-    // Diagnostic first stage is native AA: do not pretend lower-resolution
-    // scene integration exists or silently reinterpret a Quality selection.
-    UpscaleConfig config;config.provider=provider.id();config.preset=UpscalePreset::NativeAA;
-    config.render=config.output=extent;config.fullscreen=host_settings().fullscreen;
+    UpscaleConfig config=requested;config.provider=provider.id();
     if(last_depth!=depth.image || last_color!=color.image) {last_depth=depth.image;last_color=color.image;++resource_epoch;}
     config.resource_epoch=resource_epoch;
     if(!pass) pass=std::make_shared<SceneMotionPass>(g.device);
-    if(!pass->ready() || !motion.acquire(VK_FORMAT_R16G16_SFLOAT,extent) || !output.acquire(color.format,extent)) return false;
+    if(!pass->ready() || !motion.acquire(VK_FORMAT_R16G16_SFLOAT,extent) || !output.acquire(color.format,config.output)) return false;
     if(!sampler) {
         VkSamplerCreateInfo c{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};c.magFilter=c.minFilter=VK_FILTER_NEAREST;
         c.mipmapMode=VK_SAMPLER_MIPMAP_MODE_NEAREST;c.addressModeU=c.addressModeV=c.addressModeW=VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
@@ -90,7 +89,8 @@ bool scene_resolve_locked(UpscalerProvider& provider,const SceneCamera& camera,s
     if(!pass->record(commands,set,sampler,depth_input,motion.image,extent,reprojection,jitter)) return false;
     dependency(commands,VK_ACCESS_SHADER_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
     UpscaleFrame inputs;inputs.commands=commands;inputs.color=image(color);inputs.depth=depth_input;inputs.motion=motion.image;inputs.output=output.image;
-    inputs.input_area=inputs.output_area={{0,0},{extent.width,extent.height}};inputs.stage=UpscaleStage::SceneBeforeUI;
+    inputs.input_area={{0,0},{extent.width,extent.height}};
+    inputs.output_area={{0,0},{config.output.width,config.output.height}};inputs.stage=UpscaleStage::SceneBeforeUI;
     inputs.jitter=jitter;inputs.engine_jitter_applied=true;
     const auto now=std::chrono::steady_clock::now();
     inputs.delta_seconds=1.0f/std::max(frame_rate_game_fps(),1);
@@ -103,11 +103,17 @@ bool scene_resolve_locked(UpscalerProvider& provider,const SceneCamera& camera,s
     if(!provider.supports(config,inputs) || !provider.record(config,inputs)) {history.invalidate(HistoryReset::BackendFailure);cameras.clear();return false;}
     dependency(commands,VK_ACCESS_SHADER_WRITE_BIT,VK_ACCESS_TRANSFER_READ_BIT|VK_ACCESS_TRANSFER_WRITE_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT);
     VkImageCopy copy{};copy.srcSubresource=copy.dstSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};copy.extent={extent.width,extent.height,1};
-    vkCmdCopyImage(commands,output.image.image,VK_IMAGE_LAYOUT_GENERAL,color.image,VK_IMAGE_LAYOUT_GENERAL,1,&copy);
-    dependency(commands,VK_ACCESS_TRANSFER_WRITE_BIT,VK_ACCESS_MEMORY_READ_BIT|VK_ACCESS_MEMORY_WRITE_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+    if(config.output==extent) {
+        vkCmdCopyImage(commands,output.image.image,VK_IMAGE_LAYOUT_GENERAL,color.image,VK_IMAGE_LAYOUT_GENERAL,1,&copy);
+        resolved_source=0;
+    } else {resolved_source=color.base;resolved_frame=frame;}
+    dependency(commands,VK_ACCESS_MEMORY_WRITE_BIT,VK_ACCESS_MEMORY_READ_BIT|VK_ACCESS_MEMORY_WRITE_BIT,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
     color.fill_last=false;history.commit();cameras.commit(camera,frame,config.resource_epoch);last_scene=now;
     ++scene_evaluations;if(inputs.reset!=HistoryReset::None) ++history_resets;
     return true;
+}
+VkImageView scene_resolve_view_locked(std::uint64_t source,std::uint64_t frame) {
+    return source && source==resolved_source && frame==resolved_frame ? output.image.view : VK_NULL_HANDLE;
 }
 void scene_resolve_shutdown_locked() {
     if(!pass && !sampler && !motion.image.image && !output.image.image) return;
@@ -119,5 +125,6 @@ void scene_resolve_shutdown_locked() {
     cameras.clear();history.invalidate(HistoryReset::Load);
     last_scene={};last_depth={};last_color={};
     scene_evaluations=history_resets=0;
+    resolved_source=0;resolved_frame=~0ull;
 }
 }
