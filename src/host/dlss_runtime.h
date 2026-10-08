@@ -6,8 +6,10 @@
 #include <vulkan/vulkan.h>
 
 namespace gpu {
+class UpscalerProvider;
 void dlss_runtime_instance_locked(std::vector<std::string>& extensions);
 void dlss_runtime_device_locked(VkInstance, VkPhysicalDevice, std::vector<const char*>& extensions);
 void dlss_runtime_initialize_locked(VkInstance, VkPhysicalDevice, VkDevice);
 bool dlss_runtime_shutdown_locked();
+UpscalerProvider* dlss_runtime_scene_locked();
 }

@@ -11,6 +11,9 @@
 #include "host/shader_patch.h"
 #include "host/upscaler.h"
 #include "host/scene_motion.h"
+#include "host/scene_pass_graph.h"
+#include "host/scene_resolve.h"
+#include "host/dlss_runtime.h"
 #include "host/settings.h"
 #include "host/tess_lds.h"
 
@@ -53,6 +56,19 @@ std::atomic<bool> g_dump_request{false};
 std::mutex g_capture_mu;
 std::string g_capture_dir;
 namespace {
+struct TemporalScene {
+    ScenePassGraph graph;
+    std::uint64_t flip=~0ull,depth_base=0;
+    VkImage depth_image=VK_NULL_HANDLE;
+    UpscaleExtent extent;SceneCamera camera;
+    TemporalSample jitter;
+    bool camera_valid=false,primary_draw=false,graphics_dirty=false;
+    unsigned jittered=0;
+};
+TemporalScene g_temporal_scene;
+bool g_temporal_scene_failed=false;
+thread_local bool t_scene_jitter=false;
+const bool g_temporal_graph_audit=[] {const char* e=std::getenv("BBHOST_TEMPORAL_AUDIT");return e && std::strcmp(e,"1")==0;}();
 
 // A file of the pending F12 capture: <its folder>/f12-<flip>-<what>.<format>.
 std::string capture_file(std::uint64_t flip, const char* what) {
@@ -1888,6 +1904,53 @@ struct DrawState {
     std::uint32_t gx_ids[3] = {};
     std::uint64_t program_fp = 0;  // GpuDrawInputs::program_fp: stands for vte_cntl and the PS/VS fields below it
 };
+
+bool scene_draw_prepare_locked(const GpuDraw& d,const DrawState& s,const StageImages* stages) {
+    auto* provider=dlss_runtime_scene_locked();
+    if((!provider || g_temporal_scene_failed) && !g_temporal_graph_audit) return false;
+    if(!d.gx_token || !d.gx_objects || !d.gx_token_kind) return false;
+    auto& frame=g_temporal_scene;const auto flip=d.gx_objects->call_flip;
+    if(frame.flip!=flip) {
+        frame=TemporalScene{};frame.flip=flip;frame.graph.begin(flip);
+        const auto settings=host_settings();frame.extent={static_cast<unsigned>(settings.res_width),static_cast<unsigned>(settings.res_height)};
+        frame.jitter=temporal_jitter(flip,8);
+    }
+    const bool full=std::fabs(std::fabs(s.vport[0]*2)-frame.extent.width)<1 && std::fabs(std::fabs(s.vport[2]*2)-frame.extent.height)<1;
+    std::vector<std::uint64_t> reads,writes;
+    for(int st=0;st<2;++st) for(const auto& binding:stages[st].images) {
+        ViewRecord r;if(binding.view && describe_view_locked(binding.view,r) && r.render_target && r.guest_base) reads.push_back(r.guest_base);
+    }
+    for(const auto* color:s.color) if(color) writes.push_back(color->base);
+    const auto kind=std::strcmp(d.gx_token_kind,"scaleform")==0 ? ScenePassKind::Scaleform :
+        std::strcmp(d.gx_token_kind,"yebis")==0 ? ScenePassKind::Yebis : ScenePassKind::Engine;
+    frame.primary_draw=kind==ScenePassKind::Engine && d.gx_render && full && s.depth && s.color[0] && s.color[1] && s.color[2] && s.color[3];
+    if(frame.primary_draw) {
+        frame.depth_base=s.depth->base;frame.depth_image=s.depth->image;frame.graph.seed(writes);
+        const std::uint64_t depth[]={s.depth->base};frame.graph.seed(depth);
+    }
+    const auto boundary=frame.graph.observe(kind,full,reads,writes);
+    if(boundary) {
+        auto* color=find_render_target(boundary);auto* depth=find_render_target(frame.depth_base);
+        bool resolved=false;
+        if(provider && !g_temporal_scene_failed && frame.camera_valid && frame.jittered && color && depth && depth->image==frame.depth_image) {
+            resolved=scene_resolve_locked(*provider,frame.camera,flip,frame.extent,*depth,*color,frame.jitter);
+            frame.graphics_dirty=true;
+        }
+        if(provider) {
+            // NGX may bind graphics state while evaluating a feature.
+            // The native draw after it must explicitly establish its state.
+            // g_recorded is invalidated below, before any of its commands.
+            if(!resolved && frame.jittered) g_temporal_scene_failed=true;
+        }
+        static unsigned logged=0;
+        if(logged++<8 || flip%120==0 || (provider && !resolved))
+            host_log("temporal-boundary: GX flip=%llu kind=%s scene=0x%llx depth=0x%llx jittered-CBs=%u camera=%u resolve=%s",
+                static_cast<unsigned long long>(flip),d.gx_token_kind,static_cast<unsigned long long>(boundary),
+                static_cast<unsigned long long>(frame.depth_base),frame.jittered,frame.camera_valid?1u:0u,resolved?"DLAA":"audit/native");
+    }
+    return provider && !g_temporal_scene_failed && full && kind==ScenePassKind::Engine &&
+        (frame.primary_draw || (s.color[0] && frame.graph.scene_owned(s.color[0]->base)));
+}
 
 // Everything a graphics pipeline is made from, hashed once as one packed
 // record (it was some thirty-five calls, each over a field or two). The
@@ -7159,6 +7222,10 @@ bool render_copy_target_locked(std::uint64_t src_base, std::uint64_t dst_base, s
     if (g_pending_clears.erase(dst_base)) ++g_pending_gen;
     dst.fill_last = false;
     g_rt_copies.fetch_add(1);
+    if(g_temporal_scene.flip!=~0ull) {
+        const std::uint64_t reads[]={src_base},writes[]={dst_base};
+        g_temporal_scene.graph.observe(ScenePassKind::Engine,false,reads,writes);
+    }
     return true;
 }
 
@@ -7771,6 +7838,25 @@ void resolve_stage_buffers(const gcn::TranslateResult& meta, const std::uint32_t
             if (first && fail_seen.size() < 32 && fail_seen.insert(what).second) {
                 host_log("render: %s buffer %s: base 0x%llx, %llu bytes%s", b.pointer ? "pointer" : "V#", what.c_str(),
                          static_cast<unsigned long long>(base), static_cast<unsigned long long>(bytes), b.indexed ? ", indexed" : "");
+            }
+        }
+        if(t_scene_jitter && outcome==kBound && !b.pointer && !b.indexed && b.max_dw<=216 && b.max_dw>=16) {
+            const auto* source=imported_bytes_locked(info.buffer,info.offset+params.cb_bias_dw[i]*4,sizeof(SceneConstants),nullptr);
+            SceneConstants fields;
+            auto& frame=g_temporal_scene;
+            if(source && scene_constants_jitter(source,sizeof(SceneConstants),frame.jitter,frame.extent,fields) &&
+               std::fabs(fields[4]-frame.extent.width)<1 && std::fabs(fields[5]-frame.extent.height)<1) {
+                SceneCamera camera;
+                if(frame.primary_draw && !frame.camera_valid && scene_camera_decode(source,sizeof(SceneConstants),camera)) {
+                    frame.camera=camera;frame.camera_valid=true;
+                }
+                DevBuffer clone;VkDeviceSize offset=0;
+                const auto align=std::max<VkDeviceSize>(g.ssbo_align,16);
+                if(acquire_staging_locked(clone,sizeof(fields)+align-1,offset)) {
+                    const auto aligned=(offset+align-1)&~(align-1);
+                    std::memcpy(static_cast<std::uint8_t*>(clone.map)+(aligned-offset),fields.data(),sizeof(fields));
+                    info={clone.buffer,aligned,sizeof(fields)};params.cb_bias_dw[i]=0;++frame.jittered;
+                } else g_temporal_scene_failed=true;
             }
         }
         ++outcomes[outcome];
@@ -11239,6 +11325,8 @@ static bool draw_impl(const GpuDraw& d) {
         prefetch_stage_images(pl.ps.meta(), s.ps_user, stage_images[1], gx_stage[1], pl.paths_match[1] ? &key_stages[1] : nullptr);
         t_resolve_site = kSiteBuffers;
     }
+    t_scene_jitter=scene_draw_prepare_locked(d,s,stage_images);
+    if(g_temporal_scene.graphics_dirty) {g_recorded=RecordedState{};g_temporal_scene.graphics_dirty=false;}
     draw_stamp.to(kRenderCostPrefetch);
     // BBHOST_CAPTURE_DRAW (draw_capture.h): run everything recorded so far
     // before this draw's sets exist, so memory and images hold its inputs.
@@ -12491,7 +12579,7 @@ static bool draw_impl(const GpuDraw& d) {
         static Audit a;
         static SceneCameraHistory cameras;
         static unsigned logged=0;
-        const auto flip=hle_video_flip_count();
+        const auto flip=d.gx_objects ? d.gx_objects->call_flip : hle_video_flip_count();
         if(a.flip!=flip) {
             if(a.found) {
                 if(logged++<8 || a.flip%120==0) {

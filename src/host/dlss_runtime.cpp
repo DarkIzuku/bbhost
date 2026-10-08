@@ -1,5 +1,6 @@
 #include "host/dlss_runtime.h"
 #include "host/dlss_ngx.h"
+#include "host/scene_resolve.h"
 #include "host/gpu_internal.h"
 #include "host/settings.h"
 #include "core/config.h"
@@ -29,7 +30,8 @@ void discard() { provider.reset(); device_extensions.clear(); }
 }
 void dlss_runtime_instance_locked(std::vector<std::string>& extensions) {
     const char* env = std::getenv("BBHOST_DLSS_INIT");
-    if (!(env && std::string(env) == "1") && config_value("upscaling.dlss_diagnostics") != "true") return;
+    const char* scene = std::getenv("BBHOST_DLSS_SCENE");
+    if (!(env && std::string(env) == "1") && !(scene && std::string(scene) == "1") && config_value("upscaling.dlss_diagnostics") != "true") return;
     std::vector<std::string> paths{config_exe_dir(), (std::filesystem::path(config_exe_dir()) / "runtime/dlss").string()};
     if (const auto path = config_value("upscaling.dlss_model_dir"); !path.empty()) paths.push_back(path);
     if (const char* path = std::getenv("BBHOST_DLSS_MODEL_PATH"); path && *path) paths.emplace_back(path);
@@ -82,9 +84,14 @@ void dlss_runtime_initialize_locked(VkInstance instance, VkPhysicalDevice physic
     // it only once its engine inputs and pre-Scaleform boundary are ready.
 }
 bool dlss_runtime_shutdown_locked() {
+    scene_resolve_shutdown_locked();
     if (!provider) return false;
     upscale_set_temporal_provider_locked(nullptr);
     provider.reset();
     return true;
+}
+UpscalerProvider* dlss_runtime_scene_locked() {
+    const char* scene=std::getenv("BBHOST_DLSS_SCENE");
+    return scene && std::string(scene)=="1" && provider && provider->available() ? provider.get() : nullptr;
 }
 }

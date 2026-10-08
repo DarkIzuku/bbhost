@@ -1846,6 +1846,8 @@ bool init_locked() {
     VkPhysicalDeviceFeatures supported{};
     vkGetPhysicalDeviceFeatures(g.phys, &supported);
     f2.features.shaderImageGatherExtended = supported.shaderImageGatherExtended;
+    // RG16F scene motion storage images use this optional core feature.
+    f2.features.shaderStorageImageExtendedFormats = supported.shaderStorageImageExtendedFormats;
     // BBHOST_RUNTIME_OFFSETS=0: the coordinates move even with the feature, to
     // compare the two.
     const char* ro = std::getenv("BBHOST_RUNTIME_OFFSETS");

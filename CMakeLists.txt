@@ -8,6 +8,8 @@ target_include_directories(shadnet_wire_test PRIVATE src)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+add_executable(scene_pass_graph_test tests/scene_pass_graph_test.cpp src/host/scene_pass_graph.cpp)
+target_include_directories(scene_pass_graph_test PRIVATE src)
 
 if(WIN32 AND NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   message(FATAL_ERROR
@@ -121,6 +123,7 @@ add_executable(bbhost
   src/host/launcher_gpu.cpp
   src/host/upscale_policy.cpp
   src/host/scene_motion.cpp
+  src/host/scene_pass_graph.cpp
   src/host/updater.cpp
   src/host/update_verify.cpp
   src/host/bindings.cpp
@@ -259,7 +262,7 @@ if(Vulkan_FOUND)
   target_include_directories(replay_common PUBLIC src)
   target_link_libraries(replay_common PUBLIC Vulkan::Headers)
   target_sources(bbhost PRIVATE src/host/gpu.cpp src/host/gpu_memtrack.cpp src/host/gpu_mutex.cpp src/host/buffer_shadow.cpp src/host/recorder.cpp src/host/bindless.cpp src/host/render.cpp src/host/textures.cpp src/host/gpu_untile.cpp src/host/depth_copy.cpp src/host/fsr.cpp src/host/glitch.cpp src/host/draw_capture.cpp
-                                src/host/shader_patch.cpp src/host/upscaler.cpp src/host/dlss_ngx.cpp src/host/dlss_runtime.cpp src/host/scene_motion_pass.cpp)
+                                src/host/shader_patch.cpp src/host/upscaler.cpp src/host/dlss_ngx.cpp src/host/dlss_runtime.cpp src/host/scene_motion_pass.cpp src/host/scene_resolve.cpp)
   add_executable(scene_motion_probe tools/scene_motion_probe.cpp src/host/scene_motion_pass.cpp src/host/scene_motion.cpp)
   target_include_directories(scene_motion_probe PRIVATE src)
   target_link_libraries(scene_motion_probe PRIVATE Vulkan::Vulkan)
@@ -354,6 +357,7 @@ if(UNIX)
   add_executable(scene_motion_test tests/scene_motion_test.cpp src/host/scene_motion.cpp)
   target_include_directories(scene_motion_test PRIVATE src)
   add_test(NAME scene_motion_test COMMAND scene_motion_test)
+  add_test(NAME scene_pass_graph_test COMMAND scene_pass_graph_test)
   add_test(NAME shadnet_wire_test COMMAND shadnet_wire_test)
   find_package(Python3 COMPONENTS Interpreter QUIET)
   if(Python3_Interpreter_FOUND)
