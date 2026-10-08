@@ -34,6 +34,12 @@ const Patch kPatches[] = {
     // which is only "off" if it never had any: turned off later, the last
     // ones stay. The blend is where the effect lands, so it is off here.
     {"111fce32", &HostSettings::depth_of_field, "depth of field", {0xd2820800, 0x04000105}, {0x7e000280, 0xbf800000}},
+    // The alternate YEBIS motion-blur program used after loading a world.
+    // It has the same verified velocity threshold and untouched centre-sample
+    // path as e0305cef, with four additional samples in its blur branch.
+    // Skipping velocity_post while leaving this program enabled made it read
+    // the stale velocity pair and produce severe radial blur even with Off.
+    {"29e06868", &HostSettings::motion_blur, "motion blur", {0x7c061420, 0xbea0246a}, {0x7c001420, 0xbea0246a}},
 };
 constexpr std::size_t kCount = sizeof(kPatches) / sizeof(kPatches[0]);
 

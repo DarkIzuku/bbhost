@@ -12,7 +12,8 @@
 // out in this renderer, for a reason not yet found. So the game keeps its
 // motion blur pass, and when the
 // setting is off that pass writes every pixel through unblurred: YEBIS's blur
-// (e0305cef) blurs only where |vx| + |vy| >= C#[0x2f2], and the patch makes
+// (e0305cef and the loaded-world variant 29e06868) blurs only where
+// |vx| + |vy| >= C#[0x2f2], and the patch makes
 // that compare always false.
 //
 // Depth of field: its composite (111fce32) blends the blurred copy in by a
