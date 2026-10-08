@@ -259,16 +259,19 @@ void set_chromatic_aberration(bool on) {
     if (g_ca_mask->exchange(want) != want) host_log("graphics: chromatic aberration %s", on ? "on" : "off");
 }
 
-// The copy, through the mask. The stub has to be within a rel32 of the code,
-// so its page comes from the low 2 GiB.
+void* alloc_exec_near(std::uint64_t at);
+// The copy, through the mask. Reuse the hook allocator: a Windows game can
+// live above 4 GiB, so the stub must be near that image, not simply low.
 bool install_ca_stub(ElfImage* image, std::uint64_t at) {
+    void* page = alloc_exec_near(at);
+    if (!page) return false;
+    const auto release_page = [page] {
 #if defined(_WIN32)
-    (void)image;
-    (void)at;
-    return false;
+        VirtualFree(page, 0, MEM_RELEASE);
 #else
-    void* page = mmap(nullptr, 0x1000, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS | MAP_32BIT, -1, 0);
-    if (page == MAP_FAILED) return false;
+        munmap(page, 0x1000);
+#endif
+    };
     auto* c = static_cast<std::uint8_t*>(page);
     const std::uint64_t stub = reinterpret_cast<std::uint64_t>(c);
     const std::uint64_t back = at + sizeof(kCaCopyBytes);
@@ -291,7 +294,7 @@ bool install_ca_stub(ElfImage* image, std::uint64_t at) {
     c[18] = 0xe9;
     if (!rel32(stub + 12, stub + kMaskAt, &to_mask) || !rel32(stub + 23, back, &to_back) ||
         !rel32(at + 5, stub, &to_stub)) {
-        munmap(page, 0x1000);
+        release_page();
         return false;
     }
     std::memcpy(c + 8, &to_mask, 4);
@@ -302,15 +305,18 @@ bool install_ca_stub(ElfImage* image, std::uint64_t at) {
     const std::uint64_t lo = at & ~0xfffull, hi = (at + sizeof(kCaCopyBytes) + 0xfff) & ~0xfffull;
     if (!guest_protect_rwx(&image->mem, lo, hi - lo)) {
         g_ca_mask = nullptr;
-        munmap(page, 0x1000);
+        release_page();
         return false;
     }
     p[0] = 0xe9;  // jmp stub
     std::memcpy(p + 1, &to_stub, 4);
     std::memset(p + 5, 0x90, sizeof(kCaCopyBytes) - 5);
     guest_protect_rx(&image->mem, lo, hi - lo);
-    return true;
+#if defined(_WIN32)
+    FlushInstructionCache(GetCurrentProcess(), page, 0x1000);
+    FlushInstructionCache(GetCurrentProcess(), p, sizeof(kCaCopyBytes));
 #endif
+    return true;
 }
 
 std::atomic<bool> g_motion_blur{true};
