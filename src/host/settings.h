@@ -24,6 +24,7 @@ struct HostSettings {
     int frame_cap = 30;   // frames a second presented; 0 is no cap
     bool fps_counter = false;
     bool spatial_upscale = true;  // FSR1, when render size is smaller than output
+    gpu::UpscalerId upscaler = gpu::UpscalerId::Fsr1;
     gpu::UpscalePreset dlss_preset = gpu::UpscalePreset::Quality;
     bool upscale_rcas = true;
     float upscale_sharpness_stops = 0.2f;

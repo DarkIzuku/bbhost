@@ -1,4 +1,5 @@
 #include "host/launcher_gpu.h"
+#include "host/gpu.h"
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -45,6 +46,11 @@ std::string launcher_gpu_json() {
                  ",\"api_version\":" + std::to_string(p.properties.apiVersion) + ",\"driver_version\":" + std::to_string(p.properties.driverVersion) + '}';
     }
     vkDestroyInstance(instance, nullptr);
+    if(selected>=0) {
+        std::string reason;
+        const bool dlss=host_gpu_dlss_probe(reason);
+        result.pop_back();result+=",\"dlss_available\":"+std::string(dlss?"true":"false")+",\"dlss_reason\":"+quote(reason.c_str())+'}';
+    }
     return result;
 #else
     return "{\"ok\":false,\"error\":\"This build has no Vulkan support\"}";

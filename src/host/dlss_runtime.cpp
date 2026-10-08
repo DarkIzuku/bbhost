@@ -16,6 +16,17 @@ namespace {
 // verified. Native/FSR1 runs neither load NGX nor alter their extension list.
 std::unique_ptr<DlssProvider> provider;
 std::vector<std::string> device_extensions;
+bool probe_requested=false,scene_requested=false;
+UpscalePreset active_preset=UpscalePreset::NativeAA;
+std::vector<std::string> model_paths() {
+    std::vector<std::string> paths{config_exe_dir(),(std::filesystem::path(config_exe_dir())/"runtime/dlss").string()};
+    if(const auto path=config_value("upscaling.dlss_model_dir");!path.empty()) paths.push_back(path);
+    if(const char* path=std::getenv("BBHOST_DLSS_MODEL_PATH");path && *path) paths.emplace_back(path);
+    // Existing bloodborne_pc installs keep the user's local signed runtime
+    // beside their selected game data. Read it there without copying assets.
+    if(!config().app0.empty()) paths.push_back((std::filesystem::path(config().app0).parent_path()/"out").string());
+    return paths;
+}
 
 bool supported(const std::vector<std::string>& needed, const std::vector<VkExtensionProperties>& available) {
     for (const auto& name : needed) {
@@ -31,10 +42,10 @@ void discard() { provider.reset(); device_extensions.clear(); }
 void dlss_runtime_instance_locked(std::vector<std::string>& extensions) {
     const char* env = std::getenv("BBHOST_DLSS_INIT");
     const char* scene = std::getenv("BBHOST_DLSS_SCENE");
-    if (!(env && std::string(env) == "1") && !(scene && std::string(scene) == "1") && config_value("upscaling.dlss_diagnostics") != "true") return;
-    std::vector<std::string> paths{config_exe_dir(), (std::filesystem::path(config_exe_dir()) / "runtime/dlss").string()};
-    if (const auto path = config_value("upscaling.dlss_model_dir"); !path.empty()) paths.push_back(path);
-    if (const char* path = std::getenv("BBHOST_DLSS_MODEL_PATH"); path && *path) paths.emplace_back(path);
+    scene_requested=(scene && std::string(scene)=="1") || host_settings().upscaler==UpscalerId::Dlss;
+    active_preset=host_settings().dlss_preset;
+    if(!probe_requested && !scene_requested && !(env && std::string(env)=="1") && config_value("upscaling.dlss_diagnostics")!="true") return;
+    auto paths=model_paths();
     const auto cache = std::filesystem::path(config().data.empty() ? config_default_data_dir() : config().data) / "bbhost/dlss";
     provider = std::make_unique<DlssProvider>(cache.string(), std::move(paths), [](std::function<void()> release) {
         // Even a context with no dispatch needs an ordered retirement. Start
@@ -78,7 +89,7 @@ void dlss_runtime_initialize_locked(VkInstance instance, VkPhysicalDevice physic
     DlssOptimalSettings optimal;
     const auto settings = host_settings();
     if (provider->optimal_settings({static_cast<std::uint32_t>(settings.res_width), static_cast<std::uint32_t>(settings.res_height)}, UpscalePreset::Quality, optimal)) {
-        host_log("DLSS: real bbhost Vulkan device ready; Quality render size %ux%u. Scene dispatch is still gated on verified motion and jitter.", optimal.render.width, optimal.render.height);
+        host_log("DLSS: real bbhost Vulkan device ready; Quality render size %ux%u; native GX scene path %s.", optimal.render.width, optimal.render.height,scene_requested?"selected":"not selected");
     }
     // No provider registration at presentation. The scene owner will install
     // it only once its engine inputs and pre-Scaleform boundary are ready.
@@ -91,12 +102,11 @@ bool dlss_runtime_shutdown_locked() {
     return true;
 }
 UpscalerProvider* dlss_runtime_scene_locked() {
-    const char* scene=std::getenv("BBHOST_DLSS_SCENE");
-    return scene && std::string(scene)=="1" && provider && provider->available() ? provider.get() : nullptr;
+    return scene_requested && provider && provider->available() ? provider.get() : nullptr;
 }
 bool dlss_runtime_scene_size_locked(UpscaleExtent output, UpscaleExtent& render, UpscalePreset& preset) {
     if(!dlss_runtime_scene_locked()) return false;
-    preset=host_settings().dlss_preset;
+    preset=active_preset;
     static UpscaleExtent previous_output,previous_render;
     static UpscalePreset previous_preset=UpscalePreset::Custom;
     if(output==previous_output && preset==previous_preset) {render=previous_render;return true;}
@@ -105,5 +115,16 @@ bool dlss_runtime_scene_size_locked(UpscaleExtent output, UpscaleExtent& render,
     previous_output=output;previous_render=render=optimal.render;previous_preset=preset;
     host_log("DLSS: GX scene plan preset=%u render=%ux%u output=%ux%u",static_cast<unsigned>(preset),render.width,render.height,output.width,output.height);
     return true;
+}
+void dlss_runtime_request_probe_locked() {probe_requested=true;}
+bool dlss_runtime_probe_locked(std::string& reason) {
+    if(!provider || !provider->available()) {reason=provider ? provider->problem() : "NGX Vulkan is unavailable on the selected GPU/driver";return false;}
+    bool model=false;
+    for(const auto& path:model_paths()) {std::error_code ec;if(std::filesystem::is_regular_file(std::filesystem::path(path)/"nvngx_dlss.dll",ec)) model=true;}
+    if(!model) {reason="Local nvngx_dlss.dll is missing; use your owned runtime in runtime/dlss or upscaling.dlss_model_dir";return false;}
+    const auto settings=host_settings();DlssOptimalSettings optimal;
+    for(const auto preset:{UpscalePreset::NativeAA,UpscalePreset::Quality,UpscalePreset::Balanced,UpscalePreset::Performance,UpscalePreset::UltraPerformance})
+        if(!provider->optimal_settings({static_cast<unsigned>(settings.res_width),static_cast<unsigned>(settings.res_height)},preset,optimal)) {reason=provider->problem();return false;}
+    reason.clear();return true;
 }
 }

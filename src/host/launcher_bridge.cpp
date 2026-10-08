@@ -49,7 +49,6 @@ bool launcher_bridge_command(int argc, char** argv, int* result) {
         else args.push_back(argv[i]);
     }
     if (command.empty()) return false;
-    if (command == "gpu") { std::puts(launcher_gpu_json().c_str()); *result = 0; return true; }
     HostConfig c;
     std::string err;
     if (!config_load(static_cast<int>(args.size()), args.data(), &c, &err)) {
@@ -64,6 +63,7 @@ bool launcher_bridge_command(int argc, char** argv, int* result) {
         *result = r.ok ? 0 : 3; return true;
     }
     host_options_load();
+    if (command == "gpu") { std::puts(launcher_gpu_json().c_str()); *result = 0; return true; }
     if (command == "account") {
         if(action=="recover" && code.empty()) {
             std::string input;char ch;

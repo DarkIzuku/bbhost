@@ -121,10 +121,10 @@ Setting g_set[kSettingCount] = {
     // What reaches the screen, counted by the presenter (host/window.cpp).
     {"fps_counter", "FPS counter", {"Off", "On"}, 0,
      "Frames per second actually presented, in the top right corner.", false},
-    {"upscaler", "Upscaling", {"Native / Off", "FSR 1"}, 1,
-     "FSR 1 reconstructs a smaller render to the window size. At equal sizes the native image is used. Temporal providers are not integrated yet.", false},
+    {"upscaler", "Upscaling", {"Native / Off", "FSR 1", "DLSS"}, 1,
+     "DLSS reconstructs the GX scene before native-resolution UI on a supported NVIDIA GPU. Requires a local DLSS runtime; unavailable hardware/runtime falls back safely. Provider changes apply on restart.", true},
     {"dlss_preset", "DLSS preset", {"DLAA", "Quality", "Balanced", "Performance", "Ultra Performance"}, 1,
-     "Saved preference for DLSS. DLAA uses native resolution. Applies when the verified DLSS scene backend is available; this setting alone does not enable DLSS.", false},
+     "DLAA renders at native resolution. Quality, Balanced, Performance and Ultra Performance use NGX's actual optimal scene resolution. Select DLSS as the upscaler. Preset changes apply on restart.", true},
     {"upscale_rcas", "RCAS sharpening", {"Off", "On"}, 1,
      "The sharpening pass after FSR 1. Off keeps the EASU result without RCAS.", false},
     {"upscale_sharpness", "RCAS sharpness", {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"}, 9,
@@ -729,6 +729,7 @@ void rebuild_settings() {
     }
     h.mouse_menu = on_of(kMouseMenu);
     h.spatial_upscale = index_of(kUpscaler) == 1;
+    h.upscaler = index_of(kUpscaler)==2 ? gpu::UpscalerId::Dlss : h.spatial_upscale ? gpu::UpscalerId::Fsr1 : gpu::UpscalerId::Native;
     {
         static constexpr gpu::UpscalePreset presets[] = {gpu::UpscalePreset::NativeAA, gpu::UpscalePreset::Quality,
             gpu::UpscalePreset::Balanced, gpu::UpscalePreset::Performance, gpu::UpscalePreset::UltraPerformance};

@@ -4142,6 +4142,12 @@ bool host_gpu_init(const char* const* instance_exts, std::uint32_t n_exts, bool 
     return init_locked();
 }
 
+bool host_gpu_dlss_probe(std::string& reason) {
+    std::lock_guard<GpuMutex> lock(g.mu);
+    gpu::dlss_runtime_request_probe_locked();
+    if(!init_locked()) {reason="Vulkan device initialization failed";return false;}
+    return gpu::dlss_runtime_probe_locked(reason);
+}
 bool host_gpu_scene_size(unsigned ow,unsigned oh,unsigned* rw,unsigned* rh) {
     std::lock_guard<GpuMutex> lock(g.mu);
     if(!init_locked()) return false;
