@@ -63,13 +63,14 @@ struct TemporalScene {
     UpscaleExtent extent;SceneCamera camera;
     TemporalSample jitter;
     bool camera_valid=false,primary_draw=false,graphics_dirty=false,resolved=false;
-    unsigned jittered=0,primary_count=0,full_count=0,draw_count=0,reads_count=0,scene_reads=0,ui_count=0;
+    unsigned jittered=0,raster_jittered=0,primary_count=0,full_count=0,draw_count=0,reads_count=0,scene_reads=0,ui_count=0;
 };
 TemporalScene g_temporal_scene;
 std::uint64_t g_temporal_sequence=0;
 bool g_temporal_scene_failed=false;
 std::uint64_t g_temporal_arm_after=~0ull;
 thread_local bool t_scene_jitter=false;
+thread_local bool t_scene_armed=false,t_scene_viewport_jitter=false;
 const bool g_temporal_graph_audit=[] {const char* e=std::getenv("BBHOST_TEMPORAL_AUDIT");return e && std::strcmp(e,"1")==0;}();
 
 // A file of the pending F12 capture: <its folder>/f12-<flip>-<what>.<format>.
@@ -1971,7 +1972,7 @@ bool scene_draw_prepare_locked(const GpuDraw& d,const DrawState& s,const KeyStag
         bool resolved=false;
         if(provider && frame.camera_valid && color && depth && depth->image==frame.depth_image && g_temporal_arm_after==~0ull)
             g_temporal_arm_after=flip;
-        if(provider && !g_temporal_scene_failed && frame.camera_valid && frame.jittered && color && depth && depth->image==frame.depth_image) {
+        if(provider && !g_temporal_scene_failed && frame.camera_valid && frame.raster_jittered && color && depth && depth->image==frame.depth_image) {
             resolved=scene_resolve_locked(*provider,frame.camera,flip,frame.extent,*depth,*color,frame.jitter);
             frame.resolved=resolved;
             frame.graphics_dirty=true;
@@ -1980,18 +1981,22 @@ bool scene_draw_prepare_locked(const GpuDraw& d,const DrawState& s,const KeyStag
             // NGX may bind graphics state while evaluating a feature.
             // The native draw after it must explicitly establish its state.
             // g_recorded is invalidated below, before any of its commands.
-            if(!resolved && frame.jittered) g_temporal_scene_failed=true;
+            if(!resolved && frame.raster_jittered) g_temporal_scene_failed=true;
         }
         static unsigned logged=0;
         if(logged++<8 || flip%120==0 || (provider && !resolved))
-            host_log("temporal-boundary: GX flip=%llu kind=%s scene=0x%llx depth=0x%llx jittered-CBs=%u camera=%u resolve=%s",
+            host_log("temporal-boundary: GX flip=%llu kind=%s scene=0x%llx depth=0x%llx jittered-CBs=%u jittered-draws=%u camera=%u resolve=%s",
                 static_cast<unsigned long long>(flip),d.gx_token_kind,static_cast<unsigned long long>(boundary),
-                static_cast<unsigned long long>(frame.depth_base),frame.jittered,frame.camera_valid?1u:0u,resolved?"DLAA":"audit/native");
+                static_cast<unsigned long long>(frame.depth_base),frame.jittered,frame.raster_jittered,frame.camera_valid?1u:0u,resolved?"DLAA":"audit/native");
     }
     // Buffer validation also runs during the unjittered bootstrap/audit. Only
     // a boundary proven in an earlier ordered frame permits projection jitter.
-    return (provider || g_temporal_graph_audit) && full && kind==ScenePassKind::Engine &&
+    const bool eligible=(provider || g_temporal_graph_audit) && full && kind==ScenePassKind::Engine &&
         (frame.primary_draw || (s.color[0] && frame.graph.scene_owned(s.color[0]->base)));
+    t_scene_armed=eligible && provider && !g_temporal_scene_failed && !frame.resolved &&
+        g_temporal_arm_after!=~0ull && flip>g_temporal_arm_after;
+    t_scene_viewport_jitter=t_scene_armed && frame.primary_draw;
+    return eligible;
 }
 
 // Everything a graphics pipeline is made from, hashed once as one packed
@@ -7727,7 +7732,7 @@ bool draw_window_locked(std::uint64_t base, std::uint64_t bytes, Located& out) {
 // boundary, or too long for one binding stays on the page-table path
 // (cb_valid bit clear) and gets the dummy buffer.
 void resolve_stage_buffers(const gcn::TranslateResult& meta, const std::uint32_t* user, gcn::StageParams& params,
-                           std::vector<VkDescriptorBufferInfo>& infos, const GxStageRecords* gx = nullptr) {
+                           std::vector<VkDescriptorBufferInfo>& infos, const GxStageRecords* gx = nullptr,bool vertex=false) {
     // Why V#s end up on the page-table path, logged every 200,000 resolves.
     enum { kBound, kNoBase, kUnaligned, kUnmapped, kTooLong, kOutcomes };
     static std::uint64_t outcomes[kOutcomes] = {};
@@ -7901,7 +7906,12 @@ void resolve_stage_buffers(const gcn::TranslateResult& meta, const std::uint32_t
                 if(!frame.camera_valid && scene_camera_decode(source,sizeof(SceneConstants),camera)) {
                     frame.camera=camera;frame.camera_valid=true;
                 }
-                if(dlss_runtime_scene_locked() && !g_temporal_scene_failed && g_temporal_arm_after!=~0ull && frame.flip>g_temporal_arm_after) {
+                if(vertex && t_scene_armed) t_scene_viewport_jitter=true;
+                // Vertex projection stays unjittered: the native viewport
+                // shifts every scene vertex uniformly, including shaders
+                // using only model/bone constants. Reconstruction in the
+                // pixel stage gets the corresponding inverse/projection copy.
+                if(!vertex && t_scene_armed) {
                     DevBuffer clone;VkDeviceSize offset=0;
                     const auto align=std::max<VkDeviceSize>(g.ssbo_align,16);
                     if(acquire_staging_locked(clone,sizeof(fields)+align-1,offset)) {
@@ -11355,6 +11365,7 @@ static bool draw_impl(const GpuDraw& d) {
             pl.paths_match[1] = ps_paths ? key_stage_matches(pl.ps.meta(), *ps_paths) : pl.ps.meta().images.empty() && pl.ps.meta().samplers.empty();
         }
         t_scene_jitter=false;
+        t_scene_armed=t_scene_viewport_jitter=false;
         if(dlss_runtime_scene_locked() || g_temporal_graph_audit) {
             static thread_local KeyStage temporal_words[2];
             const KeyStage* words[2]={&key_stages[0],&key_stages[1]};
@@ -12196,7 +12207,7 @@ static bool draw_impl(const GpuDraw& d) {
             std::memcpy(params.vertex_formats, t_tess->hs_user, sizeof(params.vertex_formats));
             if (gx_stage[0]) put_tess_constants(*gx_stage[0], t_tess->tess_vsharp, params.user_sgpr);
         }
-        resolve_stage_buffers(meta, params.user_sgpr, params, buffer_infos, gx_stage[st]);
+        resolve_stage_buffers(meta, params.user_sgpr, params, buffer_infos, gx_stage[st],st==0);
         if (!meta.buffers.empty()) {
             any_buffers = true;
             all_bound = all_bound && params.cb_valid == (1u << meta.buffers.size()) - 1;
@@ -12546,7 +12557,7 @@ static bool draw_impl(const GpuDraw& d) {
             const gcn::TranslateResult& meta = st == 0 ? pl.vs.meta() : pl.ps.meta();
             std::vector<VkDescriptorBufferInfo> again;
             params.cb_valid = 0;
-            resolve_stage_buffers(meta, params.user_sgpr, params, again, gx_stage[st]);
+            resolve_stage_buffers(meta, params.user_sgpr, params, again, gx_stage[st],st==0);
             std::copy(again.begin(), again.end(), buffer_infos.begin() + static_cast<std::ptrdiff_t>(stage_first_buffer[st]));
             if (stage_reused[st] && !cb_push_on()) {
                 // This stage took the previous draw's set and params slot, and
@@ -12918,6 +12929,10 @@ static bool draw_impl(const GpuDraw& d) {
         vp.height = static_cast<float>(g_pass.extent.height);
         vp.minDepth = 0.0f;
         vp.maxDepth = 1.0f;
+    }
+    if(t_scene_viewport_jitter) {
+        vp.x+=g_temporal_scene.jitter.x;vp.y+=g_temporal_scene.jitter.y;
+        ++g_temporal_scene.raster_jittered;
     }
     // A reversed range (zscale < 0) stays reversed: Vulkan only requires
     // both ends inside [0, 1].
@@ -14610,7 +14625,7 @@ void host_gpu_temporal_frame_end() {
     if(!gpu::g_temporal_graph_audit && !requested) return;
     std::lock_guard<GpuMutex> lock(gpu::g.mu);
     const auto& frame=gpu::g_temporal_scene;
-    if(requested && !gpu::g_temporal_scene_failed && frame.flip==gpu::g_temporal_sequence && frame.jittered && !frame.resolved) {
+    if(requested && gpu::dlss_runtime_scene_locked() && !gpu::g_temporal_scene_failed && frame.flip==gpu::g_temporal_sequence && frame.raster_jittered && !frame.resolved) {
         gpu::g_temporal_scene_failed=true;
         host_log("DLSS: scene ended without a verified temporal resolve; scene jitter disabled, native rendering retained");
     }

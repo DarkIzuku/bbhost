@@ -48,6 +48,7 @@ SceneCameraHistory cameras;UpscaleHistory history;
 std::chrono::steady_clock::time_point last_scene;
 VkImage last_depth{},last_color{};
 std::uint64_t resource_epoch=0;
+std::uint64_t scene_evaluations=0,history_resets=0;
 UpscaleImage image(const RtImage& r) {return {r.image,r.view,r.format,VK_IMAGE_LAYOUT_GENERAL,{r.width,r.height}};}
 void dependency(VkCommandBuffer cmd,VkAccessFlags src,VkAccessFlags dst,VkPipelineStageFlags from,VkPipelineStageFlags to) {
     VkMemoryBarrier b{VK_STRUCTURE_TYPE_MEMORY_BARRIER};b.srcAccessMask=src;b.dstAccessMask=dst;
@@ -105,15 +106,18 @@ bool scene_resolve_locked(UpscalerProvider& provider,const SceneCamera& camera,s
     vkCmdCopyImage(commands,output.image.image,VK_IMAGE_LAYOUT_GENERAL,color.image,VK_IMAGE_LAYOUT_GENERAL,1,&copy);
     dependency(commands,VK_ACCESS_TRANSFER_WRITE_BIT,VK_ACCESS_MEMORY_READ_BIT|VK_ACCESS_MEMORY_WRITE_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
     color.fill_last=false;history.commit();cameras.commit(camera,frame,config.resource_epoch);last_scene=now;
+    ++scene_evaluations;if(inputs.reset!=HistoryReset::None) ++history_resets;
     return true;
 }
 void scene_resolve_shutdown_locked() {
     if(!pass && !sampler && !motion.image.image && !output.image.image) return;
+    host_log("DLSS: scene evaluations=%llu; history resets=%llu",static_cast<unsigned long long>(scene_evaluations),static_cast<unsigned long long>(history_resets));
     render_end_pass_locked();begin_recording_locked();motion.retire();output.retire();
     if(depth_view) defer_destroy_private_view(depth_view);depth_view={};viewed_depth={};
     auto keep=std::move(pass);const auto old=sampler;sampler={};const auto device=g.device;
     g.slots[g.slot].retire_functions.push_back([keep=std::move(keep),old,device]{if(old) vkDestroySampler(device,old,nullptr);});
     cameras.clear();history.invalidate(HistoryReset::Load);
     last_scene={};last_depth={};last_color={};
+    scene_evaluations=history_resets=0;
 }
 }
