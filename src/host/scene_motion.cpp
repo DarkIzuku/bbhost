@@ -26,6 +26,36 @@ bool inverse(const SceneMatrix& m, SceneMatrix& out) {
     out=result; return true;
 }
 SceneMatrix identity() {return {1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};}
+SceneMatrix product(const SceneMatrix& a,const SceneMatrix& b) {
+    SceneMatrix out{};for(int r=0;r<4;++r) for(int c=0;c<4;++c) for(int k=0;k<4;++k) out[r*4+c]+=a[r*4+k]*b[k*4+c];return out;
+}
+bool matrix_near(const SceneMatrix& a,const SceneMatrix& b) {
+    for(int k=0;k<16;++k) if(!std::isfinite(a[k]) || std::fabs(a[k]-b[k])>0.002f*std::max(1.0f,std::fabs(b[k]))) return false;
+    return true;
+}
+}
+bool scene_constants_jitter(const void* bytes,std::size_t size,TemporalSample jitter,UpscaleExtent extent,SceneConstants& out) {
+    SceneCamera camera,jittered;
+    if(!scene_camera_decode(bytes,size,camera) || !scene_projection_jitter(camera,jitter,extent,jittered)) return false;
+    SceneConstants fields;std::memcpy(fields.data(),bytes,sizeof(fields));
+    // Rows at 8 are the absolute world-to-view transform. Rows at 52 are
+    // projection; 36 and 20 are its inverse and inverse absolute VP.
+    SceneMatrix view=identity(),projection{},inv_projection{},inv_vp{},stored{};
+    std::copy_n(fields.data()+8,12,view.begin());std::copy_n(fields.data()+52,16,projection.begin());
+    if(!(projection[0]>0 && projection[5]>0) || projection[14]!=1 || projection[15]!=0) return false;
+    SceneMatrix relative=view;relative[3]=relative[7]=relative[11]=0;
+    if(!matrix_near(product(projection,relative),camera.clip_from_relative_world) ||
+       !inverse(projection,inv_projection) || !inverse(product(projection,view),inv_vp)) return false;
+    std::copy_n(fields.data()+36,16,stored.begin());if(!matrix_near(stored,inv_projection)) return false;
+    std::copy_n(fields.data()+20,16,stored.begin());if(!matrix_near(stored,inv_vp)) return false;
+    const float x=2*jitter.x/extent.width,y=-2*jitter.y/extent.height;
+    for(int c=0;c<4;++c) {projection[c]+=x*projection[12+c];projection[4+c]+=y*projection[12+c];}
+    if(!inverse(projection,inv_projection) || !inverse(product(projection,view),inv_vp)) return false;
+    std::copy(projection.begin(),projection.end(),fields.begin()+52);
+    std::copy(inv_projection.begin(),inv_projection.end(),fields.begin()+36);
+    std::copy(inv_vp.begin(),inv_vp.end(),fields.begin()+20);
+    std::copy(jittered.clip_from_relative_world.begin(),jittered.clip_from_relative_world.end(),fields.begin()+200);
+    out=fields;return true;
 }
 bool scene_camera_valid(const SceneCamera& c) {
     for(float x:c.world_origin) if(!std::isfinite(x)) return false;

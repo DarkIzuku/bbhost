@@ -19,6 +19,24 @@ std::array<float,3> project(const SceneCamera& c,std::array<float,3> point){
 }
 }
 int main(){
+    SceneConstants constants{};const auto pinhole=camera();
+    for(int k=0;k<3;++k) {constants[8+5*k]=1;constants[180+5*k]=1;}
+    constants[195]=1;constants[100]=123;
+    for(int k=0;k<16;++k) {constants[52+k]=pinhole.clip_from_relative_world[k];constants[200+k]=pinhole.clip_from_relative_world[k];}
+    const float depthA=pinhole.clip_from_relative_world[10],depthB=pinhole.clip_from_relative_world[11];
+    SceneMatrix invP{1/1.5f,0,0,0,0,0.5f,0,0,0,0,0,1,0,0,1/depthB,-depthA/depthB};
+    for(int k=0;k<16;++k) {constants[20+k]=invP[k];constants[36+k]=invP[k];}
+    const auto original=constants;SceneConstants applied;
+    check(scene_constants_jitter(constants.data(),sizeof(constants),{0.25f,-0.375f},{1280,720},applied),"GX projection and reconstruction clone accepts consistent matrices");
+    bool inverse_ok=true;
+    for(int r=0;r<4;++r) for(int c=0;c<4;++c) {
+        float a=0,b=0;for(int k=0;k<4;++k) {a+=applied[52+r*4+k]*applied[36+k*4+c];b+=applied[200+r*4+k]*applied[20+k*4+c];}
+        inverse_ok &= near(a,r==c?1:0) && near(b,r==c?1:0);
+    }
+    check(inverse_ok,"jittered depth reconstructs with both actual inverse matrices");
+    bool unrelated=true;for(int k=0;k<216;++k) if(!((k>=20&&k<68)||(k>=200&&k<216))) unrelated &= applied[k]==original[k];
+    check(constants==original && unrelated,"original camera, shadow and material fields remain intact");
+    constants[36]=10;check(!scene_constants_jitter(constants.data(),sizeof(constants),{0.25f,0.1f},{1280,720},applied),"unknown inverse layout declines jitter");
     auto old=camera(),now=camera(0.12f); now.world_origin={1,2,0.5f};
     SceneMatrix transform; check(scene_reprojection(now,old,transform),"rotation and translation reprojection exists");
     for(auto point:{std::array<float,3>{0,0,10},std::array<float,3>{-2,4,8},std::array<float,3>{3,-1,20}}){

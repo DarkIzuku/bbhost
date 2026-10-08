@@ -22,6 +22,11 @@ bool scene_camera_motion(const SceneMatrix&, float u, float v, float depth, Upsc
 // Apply jitter only to a scene-owned copy. Never modify shared game camera
 // constants used by Scaleform, plates, culling or shadow passes.
 bool scene_projection_jitter(const SceneCamera&, TemporalSample render_pixels, UpscaleExtent, SceneCamera& out);
+using SceneConstants=std::array<float,216>;
+// Scene-owned copy of the verified GX block: projection and both inverse
+// reconstruction matrices change together. All lighting/shadow/material
+// fields outside those matrices, and the original game block, are preserved.
+bool scene_constants_jitter(const void*,std::size_t,TemporalSample,UpscaleExtent,SceneConstants& out);
 
 class SceneCameraHistory {
     SceneCamera previous_{};
