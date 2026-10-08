@@ -245,6 +245,15 @@ bool shadnet_request(const std::string& path,const json::Value& body,json::Value
                 reply=room_event(Proto::parse(unblob(n.second)));
                 reply.set("ResKind",0);reply.set("HasEvent",true);reply.set("EventId",std::to_string(++client.event_cursor));reply.set("NextCursor",std::to_string(client.event_cursor));
                 const auto name=str_of(reply,"Name");
+                if(str_of(reply,"RoomId")==std::to_string(client.room_id) &&
+                   (name=="room_member_joined" || name=="room_member_left")) {
+                    const auto* cached=client.room_cache.find("Members");
+                    json::Value members=cached && cached->type==json::Value::Type::Array ? *cached : json::Value::make_array();
+                    const auto mid=int_of(reply,"MemberId",0);
+                    members.array.erase(std::remove_if(members.array.begin(),members.array.end(),[&](const auto& m){return int_of(m,"MemberId",0)==mid;}),members.array.end());
+                    if(name=="room_member_joined") members.push(reply);
+                    client.room_cache.set("Members",std::move(members));
+                }
                 if(name=="room_destroyed" || name=="room_member_kicked" ||
                    (name=="room_member_left" && int_of(reply,"MemberId",0)==client.member_id)) {client.room_id=0;client.member_id=0;client.room_cache={};}
                 return true;

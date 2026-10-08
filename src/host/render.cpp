@@ -1908,8 +1908,13 @@ struct DrawState {
 bool scene_draw_prepare_locked(const GpuDraw& d,const DrawState& s,const StageImages* stages) {
     auto* provider=dlss_runtime_scene_locked();
     if((!provider || g_temporal_scene_failed) && !g_temporal_graph_audit) return false;
-    if(!d.gx_token || !d.gx_objects || !d.gx_token_kind) return false;
-    auto& frame=g_temporal_scene;const auto flip=d.gx_objects->call_flip;
+    if(!d.gx_token || !d.gx_token_kind) return false;
+    auto& frame=g_temporal_scene;
+    // YEBIS tokens have complete native draw inputs but no GxDrawObjects.
+    // They belong to the scene currently executing in the ordered draw path.
+    // Reading the asynchronous CPU flip counter here would split that scene.
+    if(!d.gx_objects && frame.flip==~0ull) return false;
+    const auto flip=d.gx_objects ? d.gx_objects->call_flip : frame.flip;
     if(frame.flip!=flip) {
         frame=TemporalScene{};frame.flip=flip;frame.graph.begin(flip);
         const auto settings=host_settings();frame.extent={static_cast<unsigned>(settings.res_width),static_cast<unsigned>(settings.res_height)};

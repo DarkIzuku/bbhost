@@ -50,7 +50,7 @@ int main(int argc,char** argv) {
         }
         request={}; // Never echo input or credential/token fields.
         json::Value result=json::Value::make_object();result.set("ok",ok);result.set("error",error);result.set("reply",reply);
-        std::cout << json::dump(result,0) << std::endl;
+        std::cout << json::dump(result,0) << std::flush;
     }
     net::shadnet_logout();return 0;
 }
