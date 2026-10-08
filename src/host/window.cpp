@@ -14,6 +14,7 @@
 #include "host/ingame_menu.h"
 #include "host/audio.h"
 #include "host/gpu.h"
+#include "host/foreign_hooks.h"
 #include "log.h"
 #if !defined(_WIN32)
 #include <pthread.h>
@@ -457,11 +458,18 @@ bool vk_start() {
     g_vk.device = static_cast<VkDevice>(h.device);
     g_vk.queue = static_cast<VkQueue>(h.queue);
     g_vk.present_queue = static_cast<VkQueue>(h.present_queue);
-    // Diagnostic A/B for external overlays: the existing one-queue fallback
-    // already serializes submit/present correctly. Keep the second queue by
-    // default so normal runs retain the renderer/presenter overlap.
-    if (const char* e = std::getenv("BBHOST_PRESENT_QUEUE"); e && e[0] == '0') g_vk.present_queue = VK_NULL_HANDLE;
-    host_log("present: %s queue for presentation", g_vk.present_queue ? "separate" : "renderer");
+    // RTSS 7.3.5 on the tested NVIDIA driver flickers with draws submitted on
+    // one queue and presentation on another. Native A/B runs without GPU
+    // readbacks reproduced it only on the separate-queue path. Reuse the
+    // correctly synchronized one-queue fallback when its hook is loaded;
+    // other runs retain renderer/presenter overlap. Diagnostic overrides:
+    // BBHOST_PRESENT_QUEUE=0 forces one queue, =1 keeps the second if present.
+    const char* const present_policy = std::getenv("BBHOST_PRESENT_QUEUE");
+    const bool forced_policy = present_policy && (present_policy[0] == '0' || present_policy[0] == '1');
+    const bool rtss_compat = !forced_policy && host_foreign_hooks_rtss();
+    if (rtss_compat || (forced_policy && present_policy[0] == '0')) g_vk.present_queue = VK_NULL_HANDLE;
+    host_log("present: %s queue for presentation%s", g_vk.present_queue ? "separate" : "renderer",
+             rtss_compat ? " (RTSS compatibility)" : "");
     g_vk.family = h.family;
     if (!SDL_Vulkan_CreateSurface(g_window, g_vk.instance, nullptr, &g_vk.surface)) {
         host_log("vulkan: surface creation failed: %s", SDL_GetError());

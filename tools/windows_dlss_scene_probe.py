@@ -33,7 +33,9 @@ def main():
     p.add_argument('--resize-test', default='', help='Native quiet-point resize hook: flip:WIDTHxHEIGHT[,..]')
     p.add_argument('--scene-dlaa', action='store_true', help='Experimental pre-UI DLAA diagnostic')
     p.add_argument('--clean-effects', action='store_true', help='Disable game AA/blur/DOF/color fringing to isolate temporal artifacts')
-    p.add_argument('--single-present-queue', action='store_true', help='Overlay A/B diagnostic; use renderer queue for presentation')
+    queues = p.add_mutually_exclusive_group()
+    queues.add_argument('--single-present-queue', action='store_true', help='Overlay A/B diagnostic; use renderer queue for presentation')
+    queues.add_argument('--separate-present-queue', action='store_true', help='Overlay A/B diagnostic; override automatic RTSS compatibility')
     args = p.parse_args()
     runtime, game, seed, root = [v.resolve() for v in (args.runtime, args.game, args.save, args.out)]
     if not re.fullmatch(r'\d{3,5}x\d{3,5}', args.resolution) or args.flips < 1 or args.timeout < 1 or not 0<=args.draw_list<=4096:
@@ -91,6 +93,8 @@ def main():
         env['BBHOST_DUMP_AT_DRAW'] = args.dump_at_draw
     if args.single_present_queue:
         env['BBHOST_PRESENT_QUEUE'] = '0'
+    elif args.separate_present_queue:
+        env['BBHOST_PRESENT_QUEUE'] = '1'
     log_path = root/'run.log'
     code = None
     try:
@@ -119,6 +123,7 @@ def main():
                   temporal_failures=temporal_failures,
                   clean_effects=args.clean_effects,
                   single_present_queue=args.single_present_queue,
+                  separate_present_queue=args.separate_present_queue,
                   resize_test=args.resize_test,
                   intermediate_readback=args.dump_at_draw,
                   intermediate_images=[f.name for f in sorted((root/'build').glob('rtd-*'))],

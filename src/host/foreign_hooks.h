@@ -13,3 +13,7 @@ std::string host_foreign_hooks();
 // True when OBS's game capture is among them: the device-loss message names
 // its own switch (DISABLE_VULKAN_OBS_CAPTURE=1).
 bool host_foreign_hooks_obs();
+
+// RTSS's Windows graphics hook is active in this process. The presenter uses
+// its existing single-queue path for compatibility with this overlay.
+bool host_foreign_hooks_rtss();

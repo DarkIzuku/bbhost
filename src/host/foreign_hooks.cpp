@@ -75,3 +75,11 @@ bool host_foreign_hooks_obs() {
     }
     return false;
 }
+
+bool host_foreign_hooks_rtss() {
+#if defined(_WIN32)
+    return loaded("RTSSHooks64.dll");
+#else
+    return false;
+#endif
+}
