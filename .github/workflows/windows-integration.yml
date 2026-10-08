@@ -37,11 +37,12 @@ jobs:
       - name: Build DLSS backend diagnostics and resource contract test
         run: |
           cmake --build build-win --target dlss_probe dlss_contract_test upscale_dispatch_test scene_motion_probe
-          cmake --build build-win --target shadnet_wire_test scene_pass_graph_test
+          cmake --build build-win --target shadnet_wire_test scene_pass_graph_test shadnet_transport_probe
           WINEPREFIX="$PWD/build/win/wine" WINEDEBUG=-all timeout 120 wine build-win/scene_pass_graph_test.exe
           WINEPREFIX="$PWD/build/win/wine" WINEDEBUG=-all timeout 120 wine build-win/shadnet_wire_test.exe
           mkdir -p build/win/dlss-diagnostics
           cp build-win/dlss_probe.exe build-win/dlss_contract_test.exe build-win/scene_motion_probe.exe build/win/dlss-diagnostics/
+          cp build-win/shadnet_transport_probe.exe build/win/dlss-diagnostics/
           WINEPREFIX="$PWD/build/win/wine" WINEDEBUG=-all timeout 120 wine build-win/dlss_contract_test.exe
           WINEPREFIX="$PWD/build/win/wine" WINEDEBUG=-all timeout 120 wine build-win/upscale_dispatch_test.exe
       - uses: actions/upload-artifact@v4
