@@ -63,7 +63,7 @@ struct TemporalScene {
     UpscaleExtent extent;SceneCamera camera;
     TemporalSample jitter;
     bool camera_valid=false,primary_draw=false,graphics_dirty=false;
-    unsigned jittered=0;
+    unsigned jittered=0,primary_count=0,full_count=0,draw_count=0,reads_count=0,scene_reads=0,ui_count=0;
 };
 TemporalScene g_temporal_scene;
 bool g_temporal_scene_failed=false;
@@ -1916,6 +1916,11 @@ bool scene_draw_prepare_locked(const GpuDraw& d,const DrawState& s,const StageIm
     if(!d.gx_objects && frame.flip==~0ull) return false;
     const auto flip=d.gx_objects ? d.gx_objects->call_flip : frame.flip;
     if(frame.flip!=flip) {
+        static unsigned audited=0;
+        if(g_temporal_graph_audit && frame.primary_count && (audited++<8 || frame.flip%120==0))
+            host_log("temporal-graph: flip=%llu draws=%u full=%u primary=%u rt-reads=%u scene-reads=%u UI=%u jittered=%u camera=%u",
+                static_cast<unsigned long long>(frame.flip),frame.draw_count,frame.full_count,frame.primary_count,
+                frame.reads_count,frame.scene_reads,frame.ui_count,frame.jittered,frame.camera_valid?1u:0u);
         frame=TemporalScene{};frame.flip=flip;frame.graph.begin(flip);
         const auto settings=host_settings();frame.extent={static_cast<unsigned>(settings.res_width),static_cast<unsigned>(settings.res_height)};
         frame.jitter=temporal_jitter(flip,8);
@@ -1928,8 +1933,13 @@ bool scene_draw_prepare_locked(const GpuDraw& d,const DrawState& s,const StageIm
     for(const auto* color:s.color) if(color) writes.push_back(color->base);
     const auto kind=std::strcmp(d.gx_token_kind,"scaleform")==0 ? ScenePassKind::Scaleform :
         std::strcmp(d.gx_token_kind,"yebis")==0 ? ScenePassKind::Yebis : ScenePassKind::Engine;
+    if(g_temporal_graph_audit) {
+        ++frame.draw_count;frame.full_count+=full;frame.reads_count+=reads.size();frame.ui_count+=kind==ScenePassKind::Scaleform;
+        for(auto r:reads) frame.scene_reads+=frame.graph.scene_owned(r);
+    }
     frame.primary_draw=kind==ScenePassKind::Engine && d.gx_render && full && s.depth && s.color[0] && s.color[1] && s.color[2] && s.color[3];
     if(frame.primary_draw) {
+        ++frame.primary_count;
         frame.depth_base=s.depth->base;frame.depth_image=s.depth->image;frame.graph.seed(writes);
         const std::uint64_t depth[]={s.depth->base};frame.graph.seed(depth);
     }
