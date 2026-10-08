@@ -24,7 +24,8 @@ inline json::Value room_event(const Proto& p) {
     r.set("RoomId",std::to_string(id));
     switch(p.number(3)) {
     case 0x1101:r.set("Name","room_member_joined");break;
-    case 0x1102:r.set("Name","room_member_left");r.set("Reason",p.number(4)==3?"kicked":"left");break;
+    // shadNet/Matching2's KICKOUT_ACTION is 2 (LEAVE_ACTION is 1).
+    case 0x1102:r.set("Name","room_member_left");r.set("Reason",p.number(4)==2?"kicked":"left");break;
     case 0x1103:r.set("Name","room_member_kicked");r.set("Reason","kicked");break;
     case 0x1104:r.set("Name","room_destroyed");r.set("Reason","host_left");break;
     default:r.set("Name","shadnet_room_update");break;

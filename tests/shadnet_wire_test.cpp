@@ -37,6 +37,8 @@ int main() {
     Encode event;event.number(1,1).number(2,42).number(3,0x1101).text(6,guest.bytes);
     assert(room_event(Proto::parse(event.bytes)).find("Name")->string=="room_member_joined");
     event.number(3,0x1103);assert(room_event(Proto::parse(event.bytes)).find("Name")->string=="room_member_kicked");
+    event.number(3,0x1102).number(4,2);assert(room_event(Proto::parse(event.bytes)).find("Reason")->string=="kicked");
+    event.number(4,1);assert(room_event(Proto::parse(event.bytes)).find("Reason")->string=="left");
     rejects([]{room_reply(Proto{},true);});
     std::cout<<"shadNet v1 framing/protobuf checks passed\n";
 }
