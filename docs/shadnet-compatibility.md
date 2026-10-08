@@ -1,124 +1,75 @@
-# shadNet integration audit (2026-10-07)
+# Native shadNet compatibility (2026-10-08)
 
-Inspected read-only: `DarkIzuku/shadNet` main
-`059b9e1fe7886acb7a346ff1264779be6cf72ecb` and
-`codex/bloodborne-stats-experimental`
-`34ef2e4bab83d2f3c9d4c573f0ab9ab78c258e1b`. Neither was modified.
+The WPF launcher supports a custom shadNet TCP endpoint, a separate game
+WebAPI URL, the website/account-page URL, Online ID and the native P2P port.
+Registration opens the website integrated in the server. There is no Discord
+account flow and no HunterDream server preset. Configuration remains native
+bbhost TOML; switching servers selects a distinct account profile.
 
-## Recovered integrated website source
+## Current server provenance
 
-The user's website exists in local work that was not pushed to those two
-remote branches. Recovered read-only from the earlier 2026-08-21 workspace,
-`work/shadnet-online-features`, branch `bloodborne-bootstrap`, HEAD
-`115adf2f47e824b17698c7179e41213ca6e9e37a` plus uncommitted changes. The
-editable frontend is also present at `D:/CODEX/web`. Neither copy,
-its history, configuration, databases nor binaries was modified here.
+The complete integrated website and Bloodborne bootstrap are present in
+`DarkIzuku/shadnet-p2p`, commit
+`b72a4ce3a480ab8e9d6a5c38aa3f7d3aa5becc68`. The latest TCP keepalive fix,
+`2f5f5d71bb077e6386ae01f68f6993014bcaee5c`, was applied onto that complete
+base on `bbhost-compatibility-web-v1`, resulting in
+`63aacc5ab636f4b0eb88289985b31d8db24bd718`.
 
-Provenance of the actual recovered working files (SHA-256):
+Do not replace this with an older `DarkIzuku/shadNet` branch or a TCP-only
+branch that omits the website/bootstrap. The Windows server build and its
+10 checks passed in Actions run 37741152448. The running user deployment,
+its configuration, accounts and database have not been replaced or stopped.
 
-- `src/bloodborne_website.cpp`:
-  `1404a8da845fb40627521404fbed13eb4a7b70c9b248b74dd70aacf03266e11d`.
-- `documentation/bloodborne-website.md`:
-  `df14f48fc27c302db066d38c9949ff2d59bf9c49a39f22569e40222fc59ac51b`.
-- `src/webapi_routes_bloodborne_bootstrap.cpp`:
-  `e03c5c2a5a80f78d5b305c1446cc57588913ce7cef180244443b96c9efdb6c8f`.
+Default services are TCP 31313, matching UDP 31314, game WebAPI 31315 and
+website 31316. These endpoints are editable, including HTTPS reverse proxies.
+Website HttpOnly sessions are independent of game Bearer tokens.
 
-The Hunter's Requiem is a Qt HTTP listener inside the server process,
-normally on port 31316; the game WebAPI remains on 31315. It serves
-`/register`, `/login`, `/account`, and JSON `/api/register`, `/api/login`,
-`/api/account`. Registration calls the same `RegisterShadNetAccount`
-service as TCP account creation. The website uses an independent HttpOnly
-cookie and CSRF value: a web session is not a bbhost game token. The launcher
-can build the registration link from the user's server origin; its port,
-path and HTTPS proxy URL remain editable and persist in native TOML.
+## Implemented client boundary
 
-## Current game compatibility
+`src/net/shadnet.cpp` adapts bbhost's existing account/session requests to the
+server's v1 TCP framing and protobuf messages. It does not import the shadPS4
+networking stack. Existing Matching2 callbacks, signaling and native P2P
+sockets remain in use. Native bbhost servers retain their original transport.
 
-Changing bbhost's server URL to shadNet does not implement multiplayer:
+Implemented: website-account login, game token retrieval, capability query,
+context start, room creation/join/leave/kick, room membership events, local
+session cache, heartbeat and peer endpoint resolution. shadNet UDP discovery
+uses the existing P2P socket; ordinary STUN and bbhost relay support remain
+available on the native transport.
 
-- shadNet authenticates/registers over its TCP protocol (15-byte header,
-  protocol version 1, protobuf Login/Create messages). Default ports are
-  TCP 31313, matching UDP 31314, and WebAPI TCP 31315. Matching2 is disabled
-  in its default configuration. See `documentation/protocol.md`,
-  `src/cmd_account.cpp`, `src/config.cpp`.
-- bbhost authenticates through JSON `/auth/account/create`, `/auth/recover`,
-  `/auth/device/*` and requires `ResKind`, `Token`, `OnlineId` replies.
-  Matchmaking uses JSON `/mp/matching2/context_start`, `/create_room`,
-  `/join_room`, `/heartbeat` and `/np/events/poll`. See `net/account.cpp`
-  and `net/session.cpp`. Existing STUN, P2P and relay code must be retained.
-- shadNet's `/v1/users`, `/v1/sessions` and presence WebAPI is not this API;
-  its Bearer token is resolved through its own database. `/status` is a
-  service-status response, not an account-creation page.
-- The two published branches contain no browser signup page. The recovered
-  local source above DOES contain it, as the user described. It still has no
-  bbhost `/auth/*` account service or JSON `/mp/matching2/*` contract. Its
-  Bloodborne bootstrap/world-data extensions do not implement that contract.
-  Do not submit game credentials to the independent web-cookie endpoints.
+Passwords travel through the launcher's private stdin pipe, never command-line
+arguments. Remembered Windows credentials use DPAPI and are bound to the
+selected account/server profile. A server change cannot silently reuse another
+server's token. Certificate verification remains configurable and enabled by
+default for TLS endpoints.
 
-The launcher provides Offline and custom native server profiles, plus an
-explicit account-page URL and a link helper for shadNet's integrated website.
-shadNet is not advertised as a working game/multiplayer preset yet.
-Discord is disabled. Account creation in this frontend opens the configured
-page, never a local shadNet client registration command.
+The compatibility boundary is protocol major v1, not a server executable SHA.
+Unknown additive protobuf fields are ignored. Optional capabilities default
+conservatively when absent. Additive server fixes need no client rebuild;
+breaking authentication or wire-format changes require compatible server
+support or a client update. Arbitrary incompatible server versions are not
+promised to work.
 
-## Server versions without a client release per update
+## Verification and remaining checks
 
-The intended compatibility boundary is a stable protocol, not a repository
-commit/version string. A shadNet gateway must preserve bbhost's JSON contract
-while mapping accounts, room lifecycle, events, signaling endpoints and relay
-to the deployed shadNet protocol. Keep this at `net/session`/server boundaries;
-do not transplant shadPS4's networking stack or change the engine hooks.
+Two isolated native transport clients authenticated with temporary accounts
+created and logged in through the latest server's integrated website. They
+passed capability negotiation, context start, room create/join, membership
+notifications and leave. Expanded checks exercise UDP discovery, peer endpoint
+resolution, session-cache updates, kick and rejoin. Those checks exposed a
+kick-cause mismatch: Matching2 KICKOUT_ACTION is 2, now covered by a wire
+regression test. The corrected e198c62 Windows diagnostic passed the expanded full test against server 63aacc5, including kick/rejoin and cache updates.
 
-The gateway should negotiate a protocol major version and optional capabilities,
-ignore additive fields, preserve v1 behavior, and default missing optional
-features conservatively. bbhost already accepts old heartbeat replies missing
-`InRoom` (`server_heartbeat`). Do not pin a server build SHA, auto-download
-executable code from servers, or claim all versions are interchangeable.
+`tools/shadnet_integration_probe.py` copies only executable/runtime assets into
+a new test directory, starts its own server on loopback ports 42313-42316,
+creates temporary accounts and stops only its own child processes. It never
+copies or modifies a deployment's account database or configuration:
 
-Once that gateway contract is implemented and tested, server bug fixes and
-additive upgrades can retain client compatibility. A breaking wire/auth change
-still requires a gateway compatibility implementation or a client update.
-Required validation: account lifecycle, two clients, room create/join/leave,
-summons/invasions, WebAPI, event replay/ack, STUN, NAT/relay and disconnects.
-Live service availability was checked below; multiplayer compatibility was
-not tested in this stage.
+```text
+python tools/shadnet_integration_probe.py --server-dir CLEAN_SERVER_PACKAGE --probe shadnet_transport_probe.exe --work-dir NEW_TEST_DIRECTORY
+```
 
-## Launcher connection controls
-
-The WPF Online page now exposes native WebAPI, `online.online_id`, P2P UDP
-port and optional advertised IPv4/STUN endpoint. Its expandable network
-section separates `online.np_server` (bbhost account/matching API) and
-`online.auth_server` (optional separate account service), and exposes native
-certificate validation and account-required switches. Native P2P, signaling,
-NAT traversal and relay implementations are unchanged. There is no cosmetic
-UPnP switch without a working native implementation, and no shadPS4 network
-stack is imported.
-
-Applying a custom server writes native TOML and reloads it. Account profiles
-are named from the WebAPI, matching and auth bases together, so changing the
-account service cannot silently reuse a different server's stored token.
-Explicit API bases also avoid native fallback appending `:18671` to an
-authority that already includes a custom WebAPI port. Applying a profile is
-reported as configuration, not a successful account/server connection.
-
-The import button reads the Bloodborne `host_overrides.json` mapping for
-`https://ss4.scej-network.jp:20443`, validates its http/https target, fills the
-WebAPI address and derives the editable account-page link. It never modifies
-the JSON or activates online automatically. Real user addresses/credentials
-are not included in the repository or default settings.
-
-This import does not implement the distinct shadNet TCP login endpoint shown
-in shadPS4's settings. The browser manages web passwords; bbhost retains its
-native linked-account/recovery-code flow for compatible servers. The game
-compatibility adapter described above is still required for shadNet.
-Initial read-only checks received connection-refused errors. After the user
-started the deployment, a new check on 2026-10-08 at 02:00 UTC confirmed
-HTTP 200 for WebAPI `/status`, website `/register` and `/login`, and an
-accepted TCP connection on the shadNet login port 31313. No account
-credentials were sent, accounts changed, or authenticated game operations
-performed. Reachability does not establish protocol compatibility.
-
-Native account access is blocked until the displayed server and network
-settings have been applied. Editing a matching/auth endpoint cannot send
-account data through the previously active profile. The browser-page URL
-remains independent; opening it does not send a native account request.
+These transport tests do not certify two running games, summoning, invasions,
+bloodstains, ghosts or WAN NAT traversal. Those require end-to-end game tests
+and, for WAN, two hosts. Reachability alone is never reported as successful
+multiplayer. There is no implemented UPnP toggle advertised in the launcher.
