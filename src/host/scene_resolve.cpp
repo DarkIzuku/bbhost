@@ -39,7 +39,11 @@ struct Image {
         b.srcAccessMask=initialized ? VK_ACCESS_MEMORY_READ_BIT|VK_ACCESS_MEMORY_WRITE_BIT : 0;
         b.dstAccessMask=access;b.oldLayout=initialized ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED;
         b.newLayout=VK_IMAGE_LAYOUT_GENERAL;b.image=image.image;b.srcQueueFamilyIndex=b.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
-        b.subresourceRange={aspect,0,1,0,1};
+        // A sampled view/copy uses Z alone; layout transitions of a combined
+        // D32S8 image cover both planes without requiring separate layouts.
+        const auto transition_aspect=image.format==VK_FORMAT_D32_SFLOAT_S8_UINT ?
+            VK_IMAGE_ASPECT_DEPTH_BIT|VK_IMAGE_ASPECT_STENCIL_BIT:aspect;
+        b.subresourceRange={transition_aspect,0,1,0,1};
         vkCmdPipelineBarrier(commands,initialized ? VK_PIPELINE_STAGE_ALL_COMMANDS_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,stage,0,0,nullptr,0,nullptr,1,&b);
         initialized=true;
     }
