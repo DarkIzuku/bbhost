@@ -28,6 +28,9 @@ public:
     bool optimal_settings(UpscaleExtent output, UpscalePreset, DlssOptimalSettings& out);
     bool available() const;
     const std::string& problem() const;
+    // File version of the model module actually loaded by NGX, after feature
+    // creation. A DLL merely present in a search directory is not evidence.
+    const std::string& runtime_version() const;
     UpscalerId id() const override { return UpscalerId::Dlss; }
     bool temporal() const override { return true; }
     bool supports(const UpscaleConfig&, const UpscaleFrame&) const override;

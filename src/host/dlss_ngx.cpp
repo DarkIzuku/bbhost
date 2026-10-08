@@ -12,6 +12,7 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <winver.h>
 #else
 #include <dlfcn.h>
 #endif
@@ -162,6 +163,29 @@ bool sampled_layout(VkImageLayout l) { return l == VK_IMAGE_LAYOUT_GENERAL || l 
 bool image_valid(const UpscaleImage& i, UpscaleExtent minimum) { return i.image && i.view && i.extent.width >= minimum.width && i.extent.height >= minimum.height; }
 bool color_format(VkFormat f) { return f == VK_FORMAT_R16G16B16A16_SFLOAT || f == VK_FORMAT_R32G32B32A32_SFLOAT || f == VK_FORMAT_R8G8B8A8_UNORM; }
 bool hdr_format(VkFormat f) { return f == VK_FORMAT_R16G16B16A16_SFLOAT || f == VK_FORMAT_R32G32B32A32_SFLOAT; }
+std::string loaded_model_version() {
+#ifdef _WIN32
+    for (const auto* name : {L"nvngx_dlss.dll", L"_nvngx_dlss.dll"}) {
+        const auto module = GetModuleHandleW(name);
+        if (!module) continue;
+        wchar_t path[32768]{};
+        const DWORD length = GetModuleFileNameW(module, path, 32768);
+        if (!length || length >= 32768) continue;
+        const DWORD size = GetFileVersionInfoSizeW(path, nullptr);
+        if (!size || size > (1u << 20)) continue;
+        std::vector<unsigned char> data(size);
+        if (!GetFileVersionInfoW(path, 0, size, data.data())) continue;
+        VS_FIXEDFILEINFO* info = nullptr; UINT bytes = 0;
+        if (!VerQueryValueW(data.data(), L"\\", reinterpret_cast<void**>(&info), &bytes) ||
+            !info || bytes < sizeof(*info) || info->dwSignature != 0xfeef04bd) continue;
+        char version[64];
+        std::snprintf(version, sizeof(version), "%u.%u.%u.%u", HIWORD(info->dwFileVersionMS),
+                      LOWORD(info->dwFileVersionMS), HIWORD(info->dwFileVersionLS), LOWORD(info->dwFileVersionLS));
+        return version;
+    }
+#endif
+    return {};
+}
 }
 bool dlss_frame_contract(const UpscaleConfig& c, const UpscaleFrame& f) {
     if (c.provider != UpscalerId::Dlss || quality(c.preset) < 0 || !f.commands || !c.render.width || !c.render.height || !c.output.width || !c.output.height ||
@@ -204,7 +228,7 @@ struct DlssProvider::Impl {
     Parameter* params = nullptr;
     Handle* feature = nullptr;
     bool tried = false, initialized = false, available = false, failed = false;
-    std::string problem;
+    std::string problem, runtime_version;
     struct Key { UpscaleExtent render, output; int quality, flags; bool operator==(const Key&) const = default; } key{};
     Impl(std::string dir, std::vector<std::string> search, Retire r)
         : storage(std::make_shared<InitStorage>(std::move(dir), std::move(search))), retire(std::move(r)) {}
@@ -322,6 +346,7 @@ bool DlssProvider::optimal_settings(UpscaleExtent output, UpscalePreset preset, 
     out = found; return true;
 }
 const std::string& DlssProvider::problem() const { return impl_->problem; }
+const std::string& DlssProvider::runtime_version() const { return impl_->runtime_version; }
 bool DlssProvider::supports(const UpscaleConfig& c, const UpscaleFrame& f) const { return available() && dlss_frame_contract(c, f); }
 bool DlssProvider::record(const UpscaleConfig& c, const UpscaleFrame& f) {
     if (!supports(c, f)) return false;
@@ -339,6 +364,9 @@ bool DlssProvider::record(const UpscaleConfig& c, const UpscaleFrame& f) {
         r = i.core->create(i.device, f.commands, super_sampling, i.params, &i.feature);
         if (r != success || !i.feature) { i.failed = true; i.retire_feature(); return i.fail("DLSS feature creation failed", r); }
         i.key = key; created = true;
+        i.runtime_version = loaded_model_version();
+        std::fprintf(stderr, "DLSS: loaded model file version=%s; requested preset=%d (NGX default model selection)\n",
+                     i.runtime_version.empty() ? "unavailable" : i.runtime_version.c_str(), key.quality);
         std::fprintf(stderr, "DLSS: feature %ux%u -> %ux%u; quality=%d; flags=%d\n", c.render.width, c.render.height, c.output.width, c.output.height, key.quality, flags);
     }
     auto color = resource(f.color, false, false), depth = resource(f.depth, true, false), motion = resource(f.motion, false, false), output = resource(f.output, false, true);
