@@ -7,6 +7,7 @@
 #include "core/portable.h"
 #include "engine/gx_resources.h"
 #include "engine/gx_state.h"
+#include "engine/live_resolution.h"
 #include "host/gpu_internal.h"
 #include "host/shader_patch.h"
 #include "host/upscaler.h"
@@ -1924,7 +1925,15 @@ bool scene_draw_prepare_locked(const GpuDraw& d,const DrawState& s,const KeyStag
                 static_cast<unsigned long long>(frame.flip),frame.draw_count,frame.full_count,frame.primary_count,
                 frame.reads_count,frame.scene_reads,frame.ui_count,frame.jittered,frame.camera_valid?1u:0u);
         frame=TemporalScene{};frame.flip=flip;frame.graph.begin(flip);
-        const auto settings=host_settings();frame.extent={static_cast<unsigned>(settings.res_width),static_cast<unsigned>(settings.res_height)};
+        const auto settings=host_settings();
+        unsigned width=static_cast<unsigned>(settings.res_width),height=static_cast<unsigned>(settings.res_height);
+        // GX has already rebuilt its targets at this quiet-point size. A
+        // diagnostic resize or a rejected/rolled-back menu change need not
+        // match the saved preference; history must follow the actual scene.
+        unsigned live_width=0,live_height=0;
+        live_resolution_current(&live_width,&live_height);
+        if(live_width && live_height) {width=live_width;height=live_height;}
+        frame.extent={width,height};
         frame.jitter=temporal_jitter(flip,8);
     }
     const bool full=std::fabs(std::fabs(s.vport[0]*2)-frame.extent.width)<1 && std::fabs(std::fabs(s.vport[2]*2)-frame.extent.height)<1;
