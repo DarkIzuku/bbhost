@@ -613,13 +613,46 @@ void set_display_rect(std::uint64_t out, std::uint32_t w, std::uint32_t h) {
     if (res && at_<std::uint8_t>(res + 0x38) == 3) g_rect_resource->store(res);
 }
 
+// GXSceneContext::Initialize accepts a supplied color/depth target when its
+// width OR its height matches the context. With fixed console buffers that
+// distinction is harmless. Our 5120x2160 display buffers share the height of
+// a 3840x2160 scene, however: YEBIS writes directly to the display instead of
+// the scene target, which the following Scaleform copy then presents empty.
+// Require both dimensions, preserving the engine's normal allocation and its
+// explicit forced-target fallback. Resource dimensions stay truthful.
+constexpr std::uint64_t kSceneColorWidth = 0x26c3af0, kSceneColorHeight = 0x26c3b00;
+constexpr std::uint64_t kSceneDepthWidth = 0x26c3b41, kSceneDepthHeight = 0x26c3b52;
+bool scene_target_size_sites_ok() {
+    const auto matches = [](std::uint64_t bn, const std::uint8_t* bytes, std::size_t n) {
+        return std::memcmp(guest_ptr(g_image->mem, guest(bn)), bytes, n) == 0;
+    };
+    static constexpr std::uint8_t color_w[] = {0x41, 0x3b, 0x07, 0x74, 0x36};
+    static constexpr std::uint8_t color_h[] = {0x41, 0x3b, 0x47, 0x04, 0x74, 0x25};
+    static constexpr std::uint8_t depth_w[] = {0x41, 0x3b, 0x07, 0x74, 0x33};
+    static constexpr std::uint8_t depth_h[] = {0x41, 0x3b, 0x47, 0x04, 0x74, 0x21};
+    return matches(kSceneColorWidth, color_w, sizeof(color_w)) && matches(kSceneColorHeight, color_h, sizeof(color_h)) &&
+           matches(kSceneDepthWidth, depth_w, sizeof(depth_w)) && matches(kSceneDepthHeight, depth_h, sizeof(depth_h));
+}
+bool install_scene_target_size_check() {
+    if (!scene_target_size_sites_ok()) return false;
+    // Both branches lie in one page. Write them together so a protection
+    // failure cannot leave only the color or only the depth check changed.
+    std::uint8_t code[kSceneDepthWidth + 5 - kSceneColorWidth];
+    std::memcpy(code, guest_ptr(g_image->mem, guest(kSceneColorWidth)), sizeof(code));
+    code[3] = 0x75;  // jne color mismatch (0x26c3b06); equality checks height
+    code[4] = 0x11;
+    code[kSceneDepthWidth - kSceneColorWidth + 3] = 0x75;  // jne depth mismatch (0x26c3b58)
+    code[kSceneDepthWidth - kSceneColorWidth + 4] = 0x12;
+    return code_write(kSceneColorWidth, code, sizeof(code));
+}
+
 // ---- DefDepthStencil at the render size -----------------------------------------
 //
 // The GX init makes DefDepthStencil (the output entry's +0x70) at the size
 // the pinned reads give, beside the display buffers. Unlike them it is an
 // ordinary depth texture nothing outside the game sees - and at that size no
 // scene context took it: a context renders into the output entry's targets
-// when either side matches its own (sub_26c39f0), and otherwise makes its
+// when both dimensions match its own (sub_26c39f0, corrected above), and otherwise makes its
 // own. So the scene's depth went to a target of its own, and the debug draws,
 // which bind DefRenderTarget with DefDepthStencil (sub_25b4190) as the
 // console's scene does, tested against nothing: the hit capsules and the
@@ -1061,8 +1094,8 @@ bool live_resolution_install(ElfImage* image) {
         return std::memcmp(guest_ptr(image->mem, guest(bn)), b, n) == 0;
     };
     if (!bytes_at(kGxFree, free_pro, sizeof(free_pro)) || !bytes_at(kGxFreeRecord, free_rec_pro, sizeof(free_rec_pro)) ||
-        !bytes_at(kSwfPlayerCtor, swf_ctor_pro, sizeof(swf_ctor_pro))) {
-        host_log("resolution: refused, the GX free or SwfPlayer prologues are not as expected; changes wait for the next run");
+        !bytes_at(kSwfPlayerCtor, swf_ctor_pro, sizeof(swf_ctor_pro)) || !scene_target_size_sites_ok()) {
+        host_log("resolution: refused, the GX free, SwfPlayer or scene target size checks are not as expected; changes wait for the next run");
         return false;
     }
     // The GX init hook first: on its own it only puts the render size back
@@ -1071,6 +1104,11 @@ bool live_resolution_install(ElfImage* image) {
         host_log("resolution: the GX init hook did not go in; changes wait for the next run");
         return false;
     }
+    if (!install_scene_target_size_check()) {
+        host_log("resolution: refused, the scene target size checks could not be corrected; changes wait for the next run");
+        return false;
+    }
+    host_log("resolution: scene target reuse requires matching width and height");
     if (!pin_display_read(image, kGxInitWidthRead, kResWidth, g_display[0]) ||
         !pin_display_read(image, kGxInitHeightRead, kResHeight, g_display[1])) {
         host_log("resolution: refused, the GX init's display size reads are not as expected; changes wait for the next run");
