@@ -128,12 +128,43 @@ confirmed the world and character visible again in local captures:
 - DLAA: **1,106 actual scene evaluations**, two history resets, model
   **310.9.1.0**, no temporal fallback, normal exit, source saves unchanged.
 
+Further `7c84e5e` game validation passed without temporal fallback:
+
+- Live 1920x1080 -> 2560x1440 -> 1920x1080, after the game loaded:
+  2,201 actual evaluations over 3,000 flips, four resets, all four local
+  captures showing the scene, normal exit and unchanged source saves.
+- 3440x1440 ultrawide: 1,728 evaluations over 2,400 flips, two resets,
+  scene/HUD visible in local captures, normal exit and unchanged source saves.
+
 These runs establish recovery from the black-scene defect at the tested
-resolution, not complete temporal image-quality or performance acceptance.
-The user also reported MSI/RTSS overlay flicker present since the earliest
-tests, including Native, before the latest DLAA corrections. RTSSHooks64.dll
-and its Vulkan layer were observed loaded; overlay stability remains an
-independent open investigation. MSI/RTSS settings were not changed.
+resolutions, not complete temporal image-quality or performance acceptance.
+
+### MSI / RTSS presentation compatibility
+
+The user reported overlay flicker since the earliest tests, including Native,
+before the latest DLAA corrections. RTSSHooks64.dll and its Vulkan layer were
+observed loaded (RTSS 7.3.5.28314, MSI Afterburner 4.6.6.16757).
+`94b54b9` supplied a presentation-queue diagnostic. Native 3840x2160 A/B runs
+used the same save/configuration, 2,700 flips, no GPU readbacks and normal
+exits with source saves unchanged. The user observed a stable overlay on
+the renderer queue, and reproduced flicker using the separate present queue.
+A subsequent 4K DLAA run on the renderer queue was also reported stable.
+It completed 2,001 actual scene evaluations with two history resets and no
+temporal fallback. The Actions-built automatic-selection runtime `c16d644`
+was then tested without either queue override: the log confirmed
+`renderer queue for presentation (RTSS compatibility)`, 1,995 actual DLAA
+evaluations over 2,700 flips, two resets, model 310.9.1.0, no fallback, normal
+exit and unchanged original saves.
+
+`c16d644` detects the active Windows RTSS hook and selects bbhost's existing
+synchronized renderer-queue presentation path. Runs without RTSS retain the
+separate queue. No global MSI/RTSS setting or driver profile is modified.
+The log reports the actual queue and automatic compatibility selection.
+`BBHOST_PRESENT_QUEUE=0/1` permits controlled diagnostic overrides; the scene
+probe offers mutually exclusive matching flags. This is a workaround verified
+on the recorded GPU/driver/overlay combination, not a universal RTSS diagnosis.
+Captures and temporal auditing alter timing; these runs do not approve frame
+pacing or quantify the performance impact of the queue selection.
 
 The first two runs included camera rotation, an attack and death/reload.
 Local captures show the HUD composed after DLAA. Matching Native references
