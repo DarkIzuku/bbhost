@@ -5,6 +5,7 @@
 #include "host/plugins.h"
 #include "log.h"
 #include "net/account.h"
+#include "net/shadnet.h"
 
 #include <atomic>
 #include <mutex>
@@ -40,7 +41,7 @@ HttpResult perform(const std::string& url, const std::string* post, int timeout_
     }
     // The account's token names us to the server.
     if (const std::string token = account_token(); !token.empty()) {
-        headers = curl_slist_append(headers, ("X-BB-Token: " + token).c_str());
+        headers = curl_slist_append(headers, ((shadnet_selected()?"Authorization: Bearer ":"X-BB-Token: ") + token).c_str());
     }
     // ... and the rules this session plays by, as on the game's own requests
     // (hle/http.cpp, plugins_ruleset).
@@ -152,11 +153,13 @@ bool auth_post(const std::string& path, const json::Value& body, json::Value& ou
 
 bool np_post(const std::string& path, const json::Value& body, json::Value& out, std::string& error,
              int timeout_ms) {
+    if(shadnet_selected()) return shadnet_request(path,body,out,error,timeout_ms);
     const std::string url = np_server_base() + path;
     return parse_reply("POST " + path, http_post_json(url, body, timeout_ms), out, error);
 }
 
 bool np_get(const std::string& path, json::Value& out, std::string& error, int timeout_ms) {
+    if(shadnet_selected()) return shadnet_request(path,json::Value{},out,error,timeout_ms);
     const std::string url = np_server_base() + path;
     return parse_reply("GET " + path, http_get(url, timeout_ms), out, error);
 }

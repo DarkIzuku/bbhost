@@ -170,6 +170,10 @@ static class Program
         var differentAuth = ServerProfile.Build(false, "http://192.0.2.15:31315", "https://api.example.com/bbhost/", "https://other-auth.example.com",
                                                "", "Fixture", "9308", "", "", true, true);
         Check(custom.Name != differentAuth.Name, "different account services cannot reuse a native account profile");
+        var shad = ServerProfile.Build(false,"http://192.0.2.15:31315","","","http://192.0.2.15:31316/register","Fixture","9307","","off",true,true,"shadnet","tcp://192.0.2.15:31313");
+        Check(shad.Values["online.transport"] == "\"shadnet\"" && shad.Name != direct.Name,"shadNet protocol and TCP endpoint isolate saved account profiles");
+        Throws(() => ServerProfile.Build(false,"http://example.com","","","","Fixture","9307","","",true,true,"shadnet","tcp://user:password@example.com:31313"),"TCP endpoints reject embedded credentials");
+        Throws(() => ServerProfile.Build(false,"http://example.com","","","","Fixture","9307","","",true,true,"shadnet","tcp://example.com:31313/path"),"TCP endpoints reject HTTP paths");
         Throws(() => ServerProfile.Build(false, "http://user:password@example.com", "", "", "", "Fixture", "9307", "", "", true, true), "server profile rejects URL credentials");
         Throws(() => ServerProfile.Build(false, "http://example.com", "", "", "", "Fixture", "65536", "", "", true, true), "server profile rejects invalid P2P port");
         Throws(() => ServerProfile.Build(false, "http://example.com", "", "", "", "Fixture", "9307", "", "stun.example.com:65536", true, true), "server profile rejects invalid STUN port");
@@ -177,9 +181,11 @@ static class Program
         File.WriteAllText(overrideFile, "{\"https://ss4.scej-network.jp:20443\":\"http://192.0.2.15:31315\"}");
         string originalOverride = TomlSettings.Fingerprint(overrideFile);
         Call(window, "ImportHostOverride", overrideFile);
+        Check(Find<ComboBox>(window,"TransportCombo").SelectedIndex == 1 && Find<TextBox>(window,"ShadNetServerBox").Text == "tcp://192.0.2.15:31313","host override selects explicit shadNet transport");
         Check(Find<TextBox>(window, "CustomServerBox").Text == "http://192.0.2.15:31315" && Find<TextBox>(window, "AccountPageBox").Text == "http://192.0.2.15:31316/register", "host override imports WebAPI and integrated account page");
         Check(TomlSettings.Fingerprint(overrideFile) == originalOverride && TomlSettings.Read(profile)["online.offline"] == "true", "host override import is read only and does not enable online");
         Find<ComboBox>(window, "ServerCombo").SelectedIndex = 1;
+        Find<ComboBox>(window,"TransportCombo").SelectedIndex = 0;
         Find<TextBox>(window, "NativeApiBox").Text = "https://api.example.com/bbhost";
         Find<TextBox>(window, "AuthServerBox").Text = "https://auth.example.com";
         Find<TextBox>(window, "OnlineIdBox").Text = "Fixture";

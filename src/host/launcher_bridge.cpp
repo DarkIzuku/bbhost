@@ -6,6 +6,11 @@
 #include "host/settings.h"
 #include "engine/patch_manifest.h"
 #include "bbhost_version.h"
+#include "net/shadnet.h"
+#include "net/account.h"
+#include "net/http.h"
+#include "replay/json.h"
+#include <iostream>
 
 #include <chrono>
 #include <cstdio>
@@ -60,6 +65,31 @@ bool launcher_bridge_command(int argc, char** argv, int* result) {
     }
     host_options_load();
     if (command == "account") {
+        if(action=="recover" && code.empty()) {
+            std::string input;char ch;
+            while(input.size()<16384 && std::cin.get(ch) && ch!='\n') input+=ch;
+            json::Value body;
+            if(input.size()>=16384 || !json::parse(input,body,err)) {std::puts("{\"ok\":false,\"detail\":\"Invalid private account input\"}");*result=2;return true;}
+            name=net::str_of(body,"name");code=net::str_of(body,"code");
+            std::fill(input.begin(),input.end(),'\0');
+        }
+        if(action=="shadnet-login" || (action=="signout" && net::shadnet_selected())) {
+            std::string detail,error;bool ok=true;
+            if(action=="signout") {net::shadnet_logout();detail="Signed out";}
+            else {
+                // Credentials are never arguments, environment, stdout or logs.
+                std::string input;char ch;
+                while(input.size()<16384 && std::cin.get(ch) && ch!='\n') input+=ch;
+                json::Value body;
+                ok=input.size()<16384 && json::parse(input,body,error);
+                if(ok) ok=net::shadnet_login(net::str_of(body,"name"),net::str_of(body,"password"),net::str_of(body,"validation"),true,detail,error);
+                std::fill(input.begin(),input.end(),'\0');
+            }
+            if(ok) host_options_save_now();
+            std::printf("{\"ok\":%s,\"account\":%s,\"outcome\":%s,\"detail\":%s}\n",boolean(ok),quote(host_account_signed_in()).c_str(),quote(ok?"Connected":"Refused").c_str(),quote(ok?detail:error).c_str());
+            // Query result carries the error; launcher can show it verbatim.
+            *result=0;return true;
+        }
         int which = action == "create" ? 1 : action == "recover" ? 2 : action == "website" ? 3 : action == "signout" ? 4 : -1;
         if (which < 0) { std::puts("{\"ok\":false,\"error\":\"Unknown account action\"}"); *result = 2; return true; }
         host_account_action(which, name, code);

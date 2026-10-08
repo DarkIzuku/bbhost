@@ -31,7 +31,7 @@ public sealed record ServerProfile(string Name, Dictionary<string, string> Value
 
     public static ServerProfile Build(bool offline, string webApi, string api, string auth, string accountPage,
                                       string onlineId, string p2pPort, string p2pAddress, string stun,
-                                      bool verifyTls, bool requireAccount)
+                                      bool verifyTls, bool requireAccount, string transport = "native", string shadNetServer = "")
     {
         if (!int.TryParse(p2pPort.Trim(), out int port) || port < 1 || port > 65535)
             throw new IOException("El puerto P2P debe estar entre 1 y 65535.");
@@ -46,6 +46,8 @@ public sealed record ServerProfile(string Name, Dictionary<string, string> Value
                 throw new IOException("STUN: usa host:puerto, vacío para automático u off para desactivarlo.");
         }
         var values = new Dictionary<string, string> {
+            ["online.transport"] = TomlSettings.Quote(transport),
+            ["online.shadnet_server"] = TomlSettings.Quote(shadNetServer.Trim()),
             ["online.offline"] = offline ? "true" : "false",
             ["online.online_id"] = TomlSettings.Quote(onlineId),
             ["online.p2p_port"] = port.ToString(), ["online.p2p_addr"] = TomlSettings.Quote(p2pAddress),
@@ -54,6 +56,13 @@ public sealed record ServerProfile(string Name, Dictionary<string, string> Value
             ["online.require_account"] = requireAccount ? "true" : "false",
             ["online.account_page"] = TomlSettings.Quote(accountPage.Trim()),
         };
+        if (transport != "native" && transport != "shadnet") throw new IOException("Protocolo de servidor desconocido.");
+        if (transport == "shadnet" && !offline) {
+            if (!Uri.TryCreate(shadNetServer.Trim(), UriKind.Absolute, out var tcp) ||
+                (tcp.Scheme != "tcp" && tcp.Scheme != "tls") || tcp.Host.Length == 0 || tcp.Port < 1 || tcp.Port > 65535 ||
+                tcp.UserInfo.Length > 0 || (tcp.AbsolutePath != "/" && tcp.AbsolutePath != "") || tcp.Query.Length > 0 || tcp.Fragment.Length > 0)
+                throw new IOException("shadNet: usa tcp://servidor:31313 o tls://servidor:puerto, sin credenciales.");
+        }
         if (accountPage.Trim().Length > 0) HttpUrl(accountPage, "Página de cuentas", page: true);
         Uri? web = webApi.Trim().Length > 0 ? HttpUrl(webApi, "WebAPI", true) : null;
         if (!offline && web is null) throw new IOException("Introduce la dirección WebAPI del servidor.");
@@ -67,6 +76,7 @@ public sealed record ServerProfile(string Name, Dictionary<string, string> Value
         values["online.np_server"] = TomlSettings.Quote(apiBase);
         values["online.auth_server"] = TomlSettings.Quote(authBase);
         string identity = (web?.GetLeftPart(UriPartial.Authority) ?? "") + "\n" + apiBase + "\n" + authBase;
+        if (transport == "shadnet") identity += "\nshadnet\n" + shadNetServer.Trim();
         string name = offline ? "bloodborne-offline" : "bloodborne-custom-" +
                       Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity)))[..16];
         return new(name, values);

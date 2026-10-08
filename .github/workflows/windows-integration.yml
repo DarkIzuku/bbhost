@@ -37,6 +37,8 @@ jobs:
       - name: Build DLSS backend diagnostics and resource contract test
         run: |
           cmake --build build-win --target dlss_probe dlss_contract_test upscale_dispatch_test scene_motion_probe
+          cmake --build build-win --target shadnet_wire_test
+          WINEPREFIX="$PWD/build/win/wine" WINEDEBUG=-all timeout 120 wine build-win/shadnet_wire_test.exe
           mkdir -p build/win/dlss-diagnostics
           cp build-win/dlss_probe.exe build-win/dlss_contract_test.exe build-win/scene_motion_probe.exe build/win/dlss-diagnostics/
           WINEPREFIX="$PWD/build/win/wine" WINEDEBUG=-all timeout 120 wine build-win/dlss_contract_test.exe

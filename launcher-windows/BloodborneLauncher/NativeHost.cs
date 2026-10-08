@@ -53,6 +53,7 @@ public sealed class PreparedGame
 }
 public sealed class AccountResult
 {
+    public bool Ok { get; set; } = true;
     public string Account { get; set; } = "";
     public string Outcome { get; set; } = "";
     public string Detail { get; set; } = "";
@@ -94,7 +95,13 @@ public sealed class NativeHost(string root)
 
     public async Task<AccountResult> AccountAction(string action, string name, string code, Action<AccountResult> progress)
     {
-        using var process = Process.Start(StartInfo("--launcher-account", action, "--account-name", name, "--account-code", code)) ?? throw new IOException("No se pudo abrir bbhost.");
+        var info = StartInfo("--launcher-account", action);
+        // Secrets use a private inherited pipe; process listings never reveal
+        // passwords, recovery codes or validation tokens.
+        info.RedirectStandardInput = true;
+        using var process = Process.Start(info) ?? throw new IOException("No se pudo abrir bbhost.");
+        await process.StandardInput.WriteLineAsync(JsonSerializer.Serialize(new { name, password = code, code, validation = "" }));
+        process.StandardInput.Close();
         var stderr = process.StandardError.ReadToEndAsync();
         var result = new AccountResult();
         while (await process.StandardOutput.ReadLineAsync() is { } line) {
@@ -104,5 +111,15 @@ public sealed class NativeHost(string root)
         await process.WaitForExitAsync(); await stderr;
         if (process.ExitCode != 0) throw new IOException("La operación de cuenta no pudo completarse.");
         return result;
+    }
+
+    public async Task<AccountResult> ShadNetLogin(string name, string password, string validation)
+    {
+        var info = StartInfo("--launcher-account", "shadnet-login"); info.RedirectStandardInput = true;
+        using var process = Process.Start(info) ?? throw new IOException("No se pudo abrir bbhost.");
+        var output = process.StandardOutput.ReadToEndAsync(); var error = process.StandardError.ReadToEndAsync();
+        await process.StandardInput.WriteLineAsync(JsonSerializer.Serialize(new { name, password, validation }));
+        process.StandardInput.Close(); await process.WaitForExitAsync(); await error;
+        return JsonSerializer.Deserialize<AccountResult>(await output, JsonOptions) ?? throw new IOException("Respuesta de cuenta inválida.");
     }
 }

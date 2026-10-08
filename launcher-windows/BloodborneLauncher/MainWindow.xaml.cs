@@ -77,6 +77,8 @@ public partial class MainWindow : Window
         string server = active.GetValueOrDefault("online.host", main.GetValueOrDefault("online.host", ""));
         CustomServerBox.Text = server.Contains("thehuntersdream.com", StringComparison.OrdinalIgnoreCase) || server.Length == 0 ? "" : active.GetValueOrDefault("online.scheme", "https") + "://" + server;
         AccountPageBox.Text = active.GetValueOrDefault("online.account_page", "");
+        TransportCombo.SelectedIndex = active.GetValueOrDefault("online.transport", "native") == "shadnet" ? 1 : 0;
+        ShadNetServerBox.Text = active.GetValueOrDefault("online.shadnet_server", "");
         NativeApiBox.Text = active.GetValueOrDefault("online.np_server", main.GetValueOrDefault("online.np_server", ""));
         AuthServerBox.Text = active.GetValueOrDefault("online.auth_server", main.GetValueOrDefault("online.auth_server", ""));
         if (!active.ContainsKey("online.auth_server") && AuthServerBox.Text.Contains("thehuntersdream.com", StringComparison.OrdinalIgnoreCase)) AuthServerBox.Text = "";
@@ -254,7 +256,8 @@ public partial class MainWindow : Window
     ServerProfile SelectedServer() => ServerProfile.Build(ServerCombo.SelectedIndex == 0,
         CustomServerBox.Text, NativeApiBox.Text, AuthServerBox.Text, AccountPageBox.Text,
         OnlineIdBox.Text, P2pPortBox.Text, P2pAddressBox.Text, StunServerBox.Text,
-        VerifyTlsCheck.IsChecked == true, RequireAccountCheck.IsChecked == true);
+        VerifyTlsCheck.IsChecked == true, RequireAccountCheck.IsChecked == true,
+        TransportCombo.SelectedIndex == 1 ? "shadnet" : "native", ShadNetServerBox.Text);
 
     bool SelectedServerApplied()
     {
@@ -286,6 +289,8 @@ public partial class MainWindow : Window
     void ImportHostOverride(string file)
     {
         CustomServerBox.Text = ServerProfile.ReadHostOverride(file);
+        TransportCombo.SelectedIndex = 1;
+        ShadNetServerBox.Text = "tcp://" + new Uri(CustomServerBox.Text).Host + ":31313";
         NativeApiBox.Text = ""; AuthServerBox.Text = "";
         AccountPageBox.Text = ServerLinks.ShadNetRegistration(CustomServerBox.Text).AbsoluteUri;
         FooterMessage.Text = "WebAPI y página de cuentas importadas. Revisa y aplica el perfil; el archivo original se conserva.";
@@ -302,6 +307,7 @@ public partial class MainWindow : Window
     {
         if (busy || session.Running) return;
         if (((ComboBoxItem)ServerCombo.SelectedItem).Content.ToString() == "Offline") { FooterMessage.Text = "Aplica primero un servidor compatible."; return; }
+        if (TransportCombo.SelectedIndex == 1 && action == "recover") { FooterMessage.Text = "Para shadNet utiliza Conectar cuenta shadNet con tu contraseña de la web."; return; }
         try {
             if (!SelectedServerApplied()) { FooterMessage.Text = "Aplica primero este servidor y sus opciones de red antes de acceder a la cuenta."; return; }
             SaveSettings(); SetBusy(true); AccountDetail.Text = "Abriendo el proceso de cuenta de bbhost..."; await host.AccountAction(action, AccountNameBox.Text.Trim(), RecoveryCodeBox.Password, result => { AccountStatus.Text = result.Account; AccountDetail.Text = result.Outcome + "\n" + result.Detail; }); foreach (var file in fingerprints.Keys.ToArray()) fingerprints[file] = TomlSettings.Fingerprint(file);
@@ -309,6 +315,18 @@ public partial class MainWindow : Window
         catch (Exception ex) { Error(ex); } finally { SetBusy(false); }
     }
     async void RecoverAccount_Click(object sender, RoutedEventArgs e) { await AccountAction("recover"); RecoveryCodeBox.Clear(); }
+    async void ShadNetLogin_Click(object sender, RoutedEventArgs e) {
+        if (state is null || busy || session.Running) return;
+        try {
+            if (ServerCombo.SelectedIndex == 0 || TransportCombo.SelectedIndex != 1 || !SelectedServerApplied())
+                throw new IOException("Aplica primero el perfil del servidor shadNet.");
+            SaveSettings(); SetBusy(true);
+            var result = await host.ShadNetLogin(AccountNameBox.Text.Trim(), ShadNetPasswordBox.Password, ShadNetValidationBox.Password);
+            AccountStatus.Text = result.Account; AccountDetail.Text = result.Outcome + "\n" + result.Detail;
+            foreach (var file in fingerprints.Keys.ToArray()) fingerprints[file] = TomlSettings.Fingerprint(file);
+        } catch (Exception ex) { Error(ex); }
+        finally { ShadNetPasswordBox.Clear(); ShadNetValidationBox.Clear(); SetBusy(false); }
+    }
     async void SignOut_Click(object sender, RoutedEventArgs e) => await AccountAction("signout");
     void AccountPage_Changed(object sender, TextChangedEventArgs e) => Preference_Changed(sender, e);
     void ShadNetPage_Click(object sender, RoutedEventArgs e) {

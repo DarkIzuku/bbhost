@@ -103,6 +103,7 @@ add_executable(bbhost
   src/engine/summon_invite.cpp
   src/engine/np_test.cpp
   src/net/account.cpp
+  src/net/shadnet.cpp
   src/net/http.cpp
   src/net/session.cpp
   src/net/stun.cpp
@@ -219,7 +220,7 @@ endif()
 if(UNIX)
   target_link_libraries(bbhost PRIVATE pthread dl m)
 elseif(WIN32)
-  target_link_libraries(bbhost PRIVATE ws2_32 winmm)  # hle/net.cpp, net/session.cpp; timeBeginPeriod
+  target_link_libraries(bbhost PRIVATE ws2_32 winmm crypt32)  # P2P, pacing, current-user credential protection
   # The image must stay out of the guest's fixed windows (4-10 GiB CPU dmem,
   # 0xff00000000 GPU alias): a fixed base above them, no ASLR.
   target_link_options(bbhost PRIVATE -Wl,--image-base=0x600000000 -Wl,--disable-dynamicbase)
@@ -349,6 +350,9 @@ if(UNIX)
   add_executable(scene_motion_test tests/scene_motion_test.cpp src/host/scene_motion.cpp)
   target_include_directories(scene_motion_test PRIVATE src)
   add_test(NAME scene_motion_test COMMAND scene_motion_test)
+  add_executable(shadnet_wire_test tests/shadnet_wire_test.cpp)
+  target_include_directories(shadnet_wire_test PRIVATE src)
+  add_test(NAME shadnet_wire_test COMMAND shadnet_wire_test)
   find_package(Python3 COMPONENTS Interpreter QUIET)
   if(Python3_Interpreter_FOUND)
     add_test(NAME world_baseline_test COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/world_baseline_test.py)

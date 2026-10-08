@@ -11,6 +11,7 @@
 #include "bbhost_version.h"
 #include "host/plugins.h"
 #include "net/account.h"
+#include "net/shadnet.h"
 
 #include <algorithm>
 #include <cctype>
@@ -316,7 +317,7 @@ void perform(const std::string& url, int method, const Effective& eff, std::vect
         // official names and through the addresses ss.info hands it.
         (void)rewritten;
         if (const std::string token = net::account_token(); !token.empty()) {
-            list = curl_slist_append(list, ("X-BB-Token: " + token).c_str());
+            list = curl_slist_append(list, ((net::shadnet_selected()?"Authorization: Bearer ":"X-BB-Token: ") + token).c_str());
         }
         // ... and the rules this session plays by (plugins_ruleset): the server
         // keeps a randomizer or boss-rush run off the normal map and stats, and
