@@ -202,3 +202,44 @@ server origin and persists it in native TOML. It does not treat web cookies as
 game tokens or enable an incompatible server. See `shadnet-compatibility.md`
 for source provenance and the still-required bbhost auth/Matching2 adapter.
 The local server checkout, website, database and old repository are untouched.
+
+### Upstream v0.2.15 retained with the integration
+
+Merge `a95e082` brings in upstream tag v0.2.15 at
+`5f058af3a9134896689933a060a736c301423994`, preserving both histories.
+It retains the upstream AMD tessellation LDS bounds/device-fault diagnostics,
+file-open diagnostics, guarded DLC patch, F12 screenshots, and official
+Debug Menu plugin with its built-in font and English/Japanese text.
+No legacy renderer or PM4 hooks were imported to accomplish the update.
+
+`a79ac7d` makes native preparation and native configuration share upstream's
+base/update folder policy. Selecting the base, its sibling `-UPDATE`/`-patch`,
+its dvdroot or an unambiguous wrapper leads to the same effective installation.
+The update's SFO/eboot take precedence, version 01.09 and exact executable
+hash checks remain mandatory, and mismatched base/update title IDs fail.
+The generated ELF stays in the data cache, outside both source folders.
+Encrypted SELF segments still cannot be decrypted without the necessary
+external prerequisites; no unsupported decryption is advertised.
+
+WPF enumerates the new official Debug Menu DLL with the existing plugins.
+An old native `debug_menu = "On"` migrates to the plugin if no explicit
+plugin choice exists; explicit disable wins. Global and active-profile
+plugin choices are read in the native configuration order. Windows keeps
+WPF as its frontend; the in-game PC/plugin menus remain intact.
+
+`1a5ede8` builds from the verified release tag for accurate version metadata.
+Windows run 37713376989 and Linux run 37713377001 passed. WPF ran 24 checks;
+Wine ran eight Windows ABI/host tests, including the upstream font and LDS
+checks. Linux ran 20 tests and skipped 11 that require game assets (31 total,
+zero failures). The Windows package is artifact 11522693159.
+
+The exact package booted the user's real CUSA03173 01.09 folder through WPF:
+36 native option cards, RTX 5070/617.14, 240 flips and exit 0; the launcher
+hid during play and returned afterwards. The package's NGX diagnostic also
+passed 96 synthetic DLSS/DLAA frames and seven deferred retirements.
+These checks do not enable or certify temporal upscaling inside Bloodborne.
+
+The first real load/cache comparison also initialized the official Debug Menu
+plugin and its generated font overlay successfully. See
+`windows-streaming-investigation.md` for the performance boundary, prior-fork
+comparison and repeatable isolated measurement procedure.
