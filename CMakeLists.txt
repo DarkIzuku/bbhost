@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
 project(bbhost LANGUAGES C CXX)
 
+# Cross-build CI compiles selected diagnostics with BUILD_TESTING=OFF.
+add_executable(shadnet_wire_test tests/shadnet_wire_test.cpp)
+target_include_directories(shadnet_wire_test PRIVATE src)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -350,8 +354,6 @@ if(UNIX)
   add_executable(scene_motion_test tests/scene_motion_test.cpp src/host/scene_motion.cpp)
   target_include_directories(scene_motion_test PRIVATE src)
   add_test(NAME scene_motion_test COMMAND scene_motion_test)
-  add_executable(shadnet_wire_test tests/shadnet_wire_test.cpp)
-  target_include_directories(shadnet_wire_test PRIVATE src)
   add_test(NAME shadnet_wire_test COMMAND shadnet_wire_test)
   find_package(Python3 COMPONENTS Interpreter QUIET)
   if(Python3_Interpreter_FOUND)
