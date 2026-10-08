@@ -646,22 +646,28 @@ bool install_scene_target_size_check() {
     return code_write(kSceneColorWidth, code, sizeof(code));
 }
 
-// The graphics manager initializes its main context at gm+0x60. Its second
-// context at gm+0x2c60 is a fixed 128x128 auxiliary and must keep that size.
+// The graphics manager's startup context and later world/menu scene contexts
+// share Initialize. Restrict changes to descriptors requesting the current
+// full scene size; fixed auxiliaries and already-scaled child contexts retain
+// their own sizes (especially Performance's half-sized children).
 // Reinitialize also enters Initialize, so this owns both startup and resize.
 // Change the engine descriptor, letting GX allocate its own scene/depth and
 // dependent targets. Display buffers, output entry and Scaleform stay native.
 GUEST_ABI std::int64_t scene_initialize_hook(std::uint64_t,const std::uint64_t* saved) {
     const auto ctx=saved[5],desc=saved[4],gm=saved[3];
-    if(!gm || ctx!=gm+0x60 || !desc) return 0;
+    if(!gm || !desc) return 0;
     const auto ow=at_<std::uint32_t>(desc),oh=at_<std::uint32_t>(desc+4);
+    const auto current=g_current.load();
+    const auto output_w=current?static_cast<unsigned>(current>>32):g_res_words[0];
+    const auto output_h=current?static_cast<unsigned>(current):g_res_words[1];
+    if(ow!=output_w || oh!=output_h) return 0;
     unsigned rw=ow,rh=oh;
     if(!host_gpu_scene_size(ow,oh,&rw,&rh) || (rw==ow && rh==oh)) return 0;
     alignas(32) static thread_local std::uint8_t scene_desc[0x40];
     std::memcpy(scene_desc,reinterpret_cast<const void*>(static_cast<std::uintptr_t>(desc)),sizeof(scene_desc));
     std::memcpy(scene_desc,&rw,4);std::memcpy(scene_desc+4,&rh,4);
     const_cast<std::uint64_t*>(saved)[4]=reinterpret_cast<std::uintptr_t>(scene_desc);
-    host_log("DLSS: GX primary scene %ux%u -> %ux%u; native display/UI retained",ow,oh,rw,rh);
+    host_log("DLSS: GX %s scene %ux%u -> %ux%u; native display/UI retained",ctx==gm+0x60?"primary":"world/menu",ow,oh,rw,rh);
     return 0;
 }
 
