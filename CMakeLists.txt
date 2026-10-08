@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 project(bbhost LANGUAGES C CXX)
 
 # Cross-build CI compiles selected diagnostics with BUILD_TESTING=OFF.
-add_executable(shadnet_wire_test tests/shadnet_wire_test.cpp)
+add_executable(shadnet_wire_test tests/shadnet_wire_test.cpp src/replay/json.cpp)
 target_include_directories(shadnet_wire_test PRIVATE src)
 
 set(CMAKE_CXX_STANDARD 20)

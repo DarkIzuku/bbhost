@@ -1,4 +1,5 @@
 #include "replay/json.h"
+#include <cstdlib>
 
 #include <cmath>
 #include <cstdio>

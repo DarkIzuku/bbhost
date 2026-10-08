@@ -1,4 +1,5 @@
 #include "net/shadnet_wire.h"
+#include "net/shadnet_rooms.h"
 #include <cassert>
 #include <iostream>
 using namespace net::shadwire;
@@ -26,5 +27,16 @@ int main() {
     rejects([]{unblob(std::string("\x05\0\0\0x",5));});
     // Protobuf's last singular field wins, rather than an older server value.
     Encode duplicates;duplicates.number(1,0).number(1,1);assert(Proto::parse(duplicates.bytes).number(1)==1);
+    Encode host;host.text(1,"Host").number(2,1).number(4,1).text(10,"192.0.2.1").number(11,9307);
+    Encode guest;guest.text(1,"Guest").number(2,2).text(10,"192.0.2.2").number(11,9308);
+    Encode details;details.text(2,host.bytes).text(2,guest.bytes).number(3,2).number(4,1);
+    Encode room;room.number(1,9007199254740993ull).number(2,2).number(3,5).text(6,details.bytes);
+    const auto response=room_reply(Proto::parse(room.bytes),true);
+    assert(response.find("RoomId")->string=="9007199254740993" && response.find("SessionId")->string=="9007199254740993");
+    assert(response.find("Members")->array.size()==2 && response.find("Members")->array[1].find("Port")->number==9308);
+    Encode event;event.number(1,1).number(2,42).number(3,0x1101).text(6,guest.bytes);
+    assert(room_event(Proto::parse(event.bytes)).find("Name")->string=="room_member_joined");
+    event.number(3,0x1103);assert(room_event(Proto::parse(event.bytes)).find("Name")->string=="room_member_kicked");
+    rejects([]{room_reply(Proto{},true);});
     std::cout<<"shadNet v1 framing/protobuf checks passed\n";
 }

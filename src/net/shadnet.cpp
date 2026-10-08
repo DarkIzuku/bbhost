@@ -1,5 +1,6 @@
 #include "net/shadnet.h"
 #include "net/shadnet_wire.h"
+#include "net/shadnet_rooms.h"
 #include "net/account.h"
 #include "net/http.h"
 #include "core/config.h"
@@ -79,13 +80,16 @@ struct Client {
     std::uint64_t next_id=0;
     bool authenticated=false,matching=false;
     unsigned last_error=0;
+    std::uint64_t room_id=0,event_cursor=0;
+    unsigned member_id=0;
+    json::Value room_cache;
     std::deque<std::pair<unsigned,std::string>> notifications;
     ~Client() {close();}
     void close() {
 #if defined(BBHOST_HAVE_CURL)
         if(connection) curl_easy_cleanup(connection);connection=nullptr;
 #endif
-        authenticated=false;matching=false;input.clear();notifications.clear();spec.clear();
+        authenticated=false;matching=false;input.clear();notifications.clear();spec.clear();room_id=0;member_id=0;room_cache={};
     }
 #if defined(BBHOST_HAVE_CURL)
     bool wait(bool write,Clock::time_point deadline,std::string& error) {
@@ -170,6 +174,8 @@ struct Client {
         for(;;) {
             std::string p;if(!receive(p,deadline,error)) {close();return false;}const auto h=header(p);
             if(h.type==2 && !h.id) {
+                // Unknown additive notifications do not fill the room queue.
+                if(h.command!=10) continue;
                 if(notifications.size()>=1024) {error="shadNet notification queue overflow; reconnect required";close();return false;}
                 notifications.emplace_back(h.command,p.substr(header_size));continue;
             }
@@ -234,12 +240,52 @@ bool shadnet_request(const std::string& path,const json::Value& body,json::Value
         if(path=="/np/events/ack") return true;
         if(path=="/np/events/poll") {
             Proto p;if(!client.call(12,{},p,error,timeout,false)) return false;
-            // No compatible room events are claimed until translated; WebAPI
-            // push events must not masquerade as bbhost invitations.
-            reply.set("HasEvent",false);reply.set("NextCursor",int_of(body,"Cursor",0));return true;
+            if(!client.notifications.empty()) {
+                const auto n=std::move(client.notifications.front());client.notifications.pop_front();
+                reply=room_event(Proto::parse(unblob(n.second)));
+                reply.set("ResKind",0);reply.set("HasEvent",true);reply.set("EventId",std::to_string(++client.event_cursor));reply.set("NextCursor",std::to_string(client.event_cursor));
+                const auto name=str_of(reply,"Name");
+                if(name=="room_destroyed" || name=="room_member_kicked" ||
+                   (name=="room_member_left" && int_of(reply,"MemberId",0)==client.member_id)) {client.room_id=0;client.member_id=0;client.room_cache={};}
+                return true;
+            }
+            reply.set("HasEvent",false);reply.set("NextCursor",std::to_string(client.event_cursor));return true;
         }
-        error=client.matching?"shadNet room/signaling translation is not available for this operation":"This shadNet server has disabled Matching2; asynchronous online features remain available";
-        return false;
+        if(path=="/mp/matching2/heartbeat") {
+            Proto p;if(!client.call(12,{},p,error,timeout,false)) return false;
+            reply.set("InRoom",client.room_id!=0 && str_of(body,"SessionId")==std::to_string(client.room_id));return true;
+        }
+        if(path.rfind("/mp/matching2/session_blob?",0)==0) {
+            if(!client.room_id) {error="No active shadNet room";return false;}reply=client.room_cache;return true;
+        }
+        if(path=="/np/signaling/resolve") {
+            Encode request;request.text(1,str_of(body,"OnlineId"));Proto p;
+            if(!client.call(105,request.bytes,p,error,timeout)) return false;
+            reply.set("Addr",p.text(2));reply.set("Port",static_cast<unsigned>(p.number(3)));return true;
+        }
+        if(!client.matching) {error="This shadNet server has disabled Matching2";return false;}
+        if(path=="/mp/matching2/create_room" || path=="/mp/matching2/join_room") {
+            const bool joining=path=="/mp/matching2/join_room";Encode request;Proto p;
+            if(joining) request.number(1,int_of(body,"RoomId",0)).number(2,1);
+            else request.number(1,1).number(2,int_of(body,"MaxMembers",5)).number(4,1);
+            if(!client.call(joining?102:101,request.bytes,p,error,timeout)) return false;
+            reply=room_reply(p,joining);client.room_id=p.number(1);client.member_id=p.number(joining?2:5);client.room_cache=reply;return true;
+        }
+        if(path=="/mp/matching2/leave_room") {
+            if(!client.room_id || str_of(body,"SessionId")!=std::to_string(client.room_id)) {error="The shadNet room already ended";return false;}
+            Encode request;request.number(1,client.room_id).number(2,1);Proto p;
+            if(!client.call(103,request.bytes,p,error,timeout)) return false;
+            client.room_id=0;client.member_id=0;client.room_cache={};return true;
+        }
+        if(path=="/mp/matching2/kick_member") {
+            if(!client.room_id || str_of(body,"SessionId")!=std::to_string(client.room_id)) {error="No active shadNet room";return false;}
+            Encode request;request.number(1,client.room_id).number(2,1).number(3,int_of(body,"MemberId",0));Proto p;
+            return client.call(110,request.bytes,p,error,timeout);
+        }
+        // Endpoint registration uses shadNet's own UDP discovery on the
+        // existing P2P socket, not a fabricated address in an HTTP reply.
+        if(path=="/mp/matching2/signaling_update") return true;
+        error="Unsupported shadNet operation: "+path;return false;
     } catch(const std::exception& e) {client.close();error=e.what();return false;}
 }
 }

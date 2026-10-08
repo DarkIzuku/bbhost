@@ -7,6 +7,7 @@
 #include "log.h"
 #include "net/account.h"
 #include "net/http.h"
+#include "net/shadnet.h"
 
 #if defined(_WIN32)
 #include <ws2tcpip.h>
@@ -194,6 +195,12 @@ void stun_server(std::string* host, std::uint16_t* port) {
         spec = colon == std::string::npos ? base : base.substr(0, colon);
     }
     *port = 3478;
+    if(shadnet_selected() && config().stun_server.empty()) {
+        spec=config_value("online.shadnet_server");
+        const auto scheme=spec.find("://");if(scheme!=std::string::npos) spec=spec.substr(scheme+3);
+        const auto colon=spec.find(':');if(colon!=std::string::npos) spec=spec.substr(0,colon);
+        *host=spec;*port=31314;return;
+    }
     const std::size_t colon = spec.find(':');
     if (colon != std::string::npos) {
         *port = static_cast<std::uint16_t>(std::atoi(spec.c_str() + colon + 1));
@@ -224,7 +231,8 @@ void mapped_refresh(bool force) {
     stun::Relay relay;
     for (int attempt = 0; attempt < 3 && !ok; ++attempt) {
         const auto t0 = std::chrono::steady_clock::now();
-        ok = hle_net_p2p_stun(host.c_str(), sport, 1000, &addr, &port, use_relay ? &relay : nullptr);
+        ok = shadnet_selected()?hle_net_p2p_shadnet_discover(host.c_str(),sport,online_id().c_str(),1000,&addr,&port):
+             hle_net_p2p_stun(host.c_str(), sport, 1000, &addr, &port, use_relay ? &relay : nullptr);
         if (ok) {
             g_stun_rtt_us = static_cast<int>(
                 std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count());

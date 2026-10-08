@@ -255,6 +255,8 @@ struct P2pPort {
     // One STUN Binding exchange at a time (hle_net_p2p_stun): the reader
     // answers the transaction it finds here (under mu).
     bool stun_pending = false, stun_done = false;
+    bool shadnet_discovery = false;
+    sockaddr_in shadnet_discovery_server{};
     std::uint8_t stun_txid[net::stun::kTxid] = {};
     std::uint32_t stun_addr = 0;
     std::uint16_t stun_port = 0;
@@ -427,6 +429,18 @@ void p2p_reader(std::shared_ptr<P2pPort> port) {
             sa.sin_port = bswap16(from_vport);
         }
         std::uint16_t src = 0, dst = 0;
+        // A discovery reply must match the server and the pending exchange;
+        // it never enters one of the game's signaling queues.
+        if(n==10 && buf[0]==0xff && buf[1]==0xff && buf[2]==0xff && buf[3]==0xff) {
+            std::lock_guard<std::mutex> lk(port->mu);
+            if(port->stun_pending && port->shadnet_discovery &&
+               sa.sin_addr.s_addr==port->shadnet_discovery_server.sin_addr.s_addr && sa.sin_port==port->shadnet_discovery_server.sin_port) {
+                std::memcpy(&port->stun_addr,buf+4,4);
+                port->stun_port=static_cast<std::uint16_t>((buf[8]<<8)|buf[9]);
+                port->stun_done=port->stun_addr && port->stun_port;port->stun_pending=false;
+                ++port->rx;port->stun_cv.notify_all();continue;
+            }
+        }
         const std::size_t hdr = p2p_header(buf, static_cast<std::size_t>(n), &src, &dst);
         std::shared_ptr<SockQueue> q;
         bool forwarded = false;
@@ -1379,6 +1393,7 @@ bool hle_net_p2p_stun(const char* host, std::uint16_t sport, int timeout_ms, std
     const std::size_t req_len =
         net::stun::build_binding_request(req, port->stun_txid, relay != nullptr, have_token ? token : nullptr);
     port->stun_pending = true;
+    port->shadnet_discovery = false;
     port->stun_done = false;
     lk.unlock();
     (void)sock_sendto(port->fd, req, req_len, true, &sa);
@@ -1423,6 +1438,27 @@ bool hle_net_p2p_relay(std::uint32_t* server, std::uint16_t* vport) {
     if (server) *server = g_relay.server;
     if (vport) *vport = g_relay.vport;
     return g_relay.on;
+}
+
+bool hle_net_p2p_shadnet_discover(const char* host,std::uint16_t sport,const char* id,int timeout_ms,
+                                 std::uint32_t* mapped_addr,std::uint16_t* mapped_port) {
+    if(!host || !id || !*id || std::strlen(id)>16 || !sport) return false;
+    addrinfo hints{};hints.ai_family=AF_INET;hints.ai_socktype=SOCK_DGRAM;addrinfo* result=nullptr;
+    if(getaddrinfo(host,nullptr,&hints,&result)!=0 || !result) return false;
+    sockaddr_in server{};std::memcpy(&server,result->ai_addr,sizeof(server));server.sin_port=bswap16(sport);freeaddrinfo(result);
+    std::shared_ptr<P2pPort> port;
+    {std::lock_guard<std::mutex> lock(g_net_mu);port=p2p_port_open(static_cast<std::uint16_t>(net::p2p_port()));}
+    if(!port) return false;
+    std::uint8_t request[25]={0xff,0xff,0xff,0xff,1};std::memcpy(request+5,id,std::strlen(id));
+    // The server derives the public endpoint from this socket, not this
+    // optional local-address field. Zero is valid behind NAT.
+    std::unique_lock<std::mutex> lock(port->mu);if(port->stun_pending) return false;
+    port->stun_pending=true;port->stun_done=false;port->shadnet_discovery=true;port->shadnet_discovery_server=server;
+    lock.unlock();const auto sent=sock_sendto(port->fd,request,sizeof(request),true,&server);lock.lock();
+    if(sent>=0) port->stun_cv.wait_for(lock,std::chrono::milliseconds(timeout_ms),[&]{return port->stun_done;});
+    const bool ok=port->stun_done;port->stun_pending=false;port->shadnet_discovery=false;
+    if(ok) {if(mapped_addr) *mapped_addr=port->stun_addr;if(mapped_port) *mapped_port=port->stun_port;}
+    return ok;
 }
 
 void hle_net_p2p_punch(const char* label, std::uint32_t addr, std::uint16_t port_host, std::uint32_t local_addr,

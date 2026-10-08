@@ -17,6 +17,9 @@
 // for datagrams to that server's other ports, an answer without one off.
 bool hle_net_p2p_stun(const char* host, std::uint16_t port, int timeout_ms, std::uint32_t* mapped_addr,
                       std::uint16_t* mapped_port, net::stun::Relay* relay = nullptr);
+// shadNet's framed discovery uses the same P2P socket and NAT mapping.
+bool hle_net_p2p_shadnet_discover(const char* host, std::uint16_t port, const char* online_id, int timeout_ms,
+                                std::uint32_t* mapped_addr, std::uint16_t* mapped_port);
 
 // Whether datagrams go through the server's relay: its address (network
 // order) and our port on it.
