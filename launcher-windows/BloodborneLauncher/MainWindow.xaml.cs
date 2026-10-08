@@ -97,12 +97,20 @@ public partial class MainWindow : Window
         dirty = false; syncing = false;
         if (state.App0.Length > 0) await Prepare(state.App0);
         else { game = null; GameVersionStatus.Text = "Selecciona Bloodborne 1.09"; PlayHint.Text = "Selecciona una carpeta de Bloodborne. El ejecutable se encuentra y prepara automáticamente."; }
+        await RefreshGpu();
+        UpdateReady();
+    }
+
+    async Task RefreshGpu()
+    {
+        if (state is null) return;
         // Native Vulkan probe, never infer provider availability from a brand name.
         try {
-            var gpu = await host.Query<GpuInfo>("--launcher-gpu");
+            var gpu = game?.Ok == true ? await host.Query<GpuInfo>("--launcher-gpu", "--app0", game.App0, "--data", DataBox.Text) : await host.Query<GpuInfo>("--launcher-gpu");
             GpuStatus.Text = gpu.Ok ? gpu.Name + " · " + gpu.Driver : "Vulkan: " + gpu.Error;
             state.GpuDescription = $"{GpuStatus.Text}; vendor={gpu.Vendor}; device={gpu.Device}; api={gpu.ApiVersion}; driver={gpu.DriverVersion}";
-        } catch (Exception ex) { GpuStatus.Text = "GPU pendiente de consulta: " + ex.Message; }
+            ApplyGpuCapabilities(gpu.DlssAvailable,gpu.DlssReason);
+        } catch (Exception ex) { GpuStatus.Text = "GPU pendiente de consulta: " + ex.Message; ApplyGpuCapabilities(false,ex.Message); }
         FooterGpu.Text = "   |   " + GpuStatus.Text;
         UpdateReady();
     }
@@ -112,6 +120,29 @@ public partial class MainWindow : Window
         public uint Vendor { get; set; } public uint Device { get; set; }
         [System.Text.Json.Serialization.JsonPropertyName("api_version")] public uint ApiVersion { get; set; }
         [System.Text.Json.Serialization.JsonPropertyName("driver_version")] public uint DriverVersion { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("dlss_available")] public bool DlssAvailable { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("dlss_reason")] public string DlssReason { get; set; } = "";
+    }
+
+    void ApplyGpuCapabilities(bool available,string reason)
+    {
+        DlssStatus.Text = available ? "DLSS disponible · DLAA, Calidad, Equilibrado, Rendimiento y Ultra Rendimiento" : "DLSS no disponible · " + reason;
+        if (selectors.TryGetValue("upscaler",out var providers)) foreach (var combo in providers) {
+            var style = new Style(typeof(ComboBoxItem));
+            if (!available) {
+                var trigger = new DataTrigger { Binding = new System.Windows.Data.Binding(), Value = "DLSS" };
+                trigger.Setters.Add(new Setter(IsEnabledProperty,false)); style.Triggers.Add(trigger);
+            }
+            combo.ItemContainerStyle = style;
+        }
+        if (selectors.TryGetValue("dlss_preset",out var presets)) foreach(var preset in presets) preset.IsEnabled=available;
+        var option=state?.Options.FirstOrDefault(x=>x.Key=="upscaler");
+        if(!available && option is not null && option.Values[option.Index]=="DLSS") {
+            syncing=true;option.Index=Array.IndexOf(option.Values,"Native / Off");
+            foreach(var combo in selectors["upscaler"]) combo.SelectedIndex=option.Index;
+            syncing=false;dirty=true;
+            DlssStatus.Text+=" · Se usará Native / Off al iniciar.";
+        }
     }
 
     void BuildNativeOptions()
@@ -125,7 +156,7 @@ public partial class MainWindow : Window
             var values = option.Key == "dlss_preset" ? option.Values.Select(x => x switch { "DLAA" => "DLAA · resolución nativa", "Quality" => "Calidad", "Balanced" => "Equilibrado", "Performance" => "Rendimiento", "Ultra Performance" => "Ultra Rendimiento", _ => x }).ToArray() : option.Values;
             var combo = new ComboBox { ItemsSource = values, SelectedIndex = option.Index, Tag = option.Key, MaxWidth = 440, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 10, 0, 8) };
             panel.Children.Add(combo);
-            panel.Children.Add(new TextBlock { Text = option.Key == "dlss_preset" ? "Preferencia guardada para DLSS. DLAA conserva la resolución nativa. Se aplicará cuando el backend de DLSS esté disponible y validado; este selector por sí solo no activa DLSS." : option.Note, TextWrapping = TextWrapping.Wrap, Foreground = (System.Windows.Media.Brush)FindResource("MutedBrush") });
+            panel.Children.Add(new TextBlock { Text = option.Key == "dlss_preset" ? "Elige DLSS en Upscaling. DLAA mantiene la resolución nativa; los demás presets reducen la escena 3D y la reconstruyen a la resolución elegida. El HUD y los menús conservan su resolución. Los cambios se aplican al iniciar el juego." : option.Note, TextWrapping = TextWrapping.Wrap, Foreground = (System.Windows.Media.Brush)FindResource("MutedBrush") });
             target.Children.Add(new Border { Style = (Style)FindResource("CardStyle"), Child = panel, Margin = new Thickness(0, 0, 0, 12) });
             selectors[option.Key] = [combo]; combo.SelectionChanged += QuickSetting_Changed;
         }
@@ -225,7 +256,7 @@ public partial class MainWindow : Window
         if (busy || session.Running) return;
         var picker = new OpenFolderDialog { Title = "Seleccionar carpeta de Bloodborne" };
         if (picker.ShowDialog(this) != true) return;
-        try { SetBusy(true); await Prepare(picker.FolderName); dirty = true; } catch (Exception ex) { Error(ex); } finally { SetBusy(false); }
+        try { SetBusy(true); await Prepare(picker.FolderName); await RefreshGpu(); dirty = true; } catch (Exception ex) { Error(ex); } finally { SetBusy(false); }
     }
     async void BrowseData_Click(object sender, RoutedEventArgs e)
     {

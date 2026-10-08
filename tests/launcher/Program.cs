@@ -29,7 +29,7 @@ static class Program
     static int FakeHost(string[] args) {
         var root = AppContext.BaseDirectory;
         string data = Path.Combine(root, "data"), config = Path.Combine(root, "config", "bbhost.toml"), options = Path.Combine(root, "config", "bbhost-options.toml");
-        if (args.Contains("--launcher-gpu")) { Console.WriteLine("{\"ok\":true,\"name\":\"Fixture GPU\",\"driver\":\"test only\"}"); return 0; }
+        if (args.Contains("--launcher-gpu")) { Console.WriteLine("{\"ok\":true,\"name\":\"Fixture GPU\",\"driver\":\"test only\",\"dlss_available\":true}"); return 0; }
         if (args.Contains("--prepare-game")) {
             Console.WriteLine(JsonSerializer.Serialize(new PreparedGame { Ok = true, App0 = Path.Combine(root, "Test game"), Eboot = Path.Combine(data, "cache", "eboot.elf"), Version = "01.09", TitleId = "TEST-FIXTURE", Sha256 = "test-fixture-only", Prepared = true }, JsonOptions)); return 0;
         }
@@ -45,7 +45,7 @@ static class Program
                     new() { Key = "resolution", Label = "Resolution", Section = "GRAPHICS", Values = ["1920x1080", "2560x1440", "3840x2160"], Index = 0 },
                     new() { Key = "window_mode", Label = "Window mode", Section = "DISPLAY", Values = ["Windowed", "Fullscreen"] },
                     new() { Key = "frame_cap", Label = "Frame cap", Section = "DISPLAY", Values = ["30", "60", "90", "120", "144", "Off"], Index = 1 },
-                    new() { Key = "upscaler", Label = "Upscaling", Section = "UPSCALING", Values = ["Native / Off", "FSR 1"], Index = 1 },
+                    new() { Key = "upscaler", Label = "Upscaling", Section = "UPSCALING", Values = ["Native / Off", "FSR 1", "DLSS"], Index = 1 },
                     new() { Key = "dlss_preset", Label = "DLSS preset", Section = "UPSCALING", Values = ["DLAA", "Quality", "Balanced", "Performance", "Ultra Performance"], Index = 1 },
                     new() { Key = "ssao", Label = "Ambient occlusion", Section = "GRAPHICS", Values = ["On", "Off"] },
                     new() { Key = "change_appearance", Label = "Hunter's Dream mirror", Section = "PC ENHANCEMENTS", Values = ["On", "Off"], Restart = true }
@@ -142,13 +142,20 @@ static class Program
         window.Show();
         Until(() => Find<Button>(window, "PlayButton").IsEnabled, "native state and preparation");
         Check(Find<Image>(window, "HeroImage").Source is BitmapSource, "embedded artwork");
-        Check(Find<ComboBox>(window, "QuickUpscaler").Items.Count == 2, "only working native providers selectable");
+        Until(()=>Find<TextBlock>(window,"DlssStatus").Text.StartsWith("DLSS disponible"),"native NGX availability query");
+        Check(Find<ComboBox>(window, "QuickUpscaler").Items.Count == 3, "DLSS provider comes from native schema");
         var preset = ((Dictionary<string,List<ComboBox>>)typeof(MainWindow).GetField("selectors", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(window)!)["dlss_preset"].Single();
         Check(preset.Items.Cast<string>().SequenceEqual(new[] { "DLAA · resolución nativa", "Calidad", "Equilibrado", "Rendimiento", "Ultra Rendimiento" }), "Spanish DLSS presets come from the native option schema");
         preset.SelectedIndex = 2; Call(window, "SaveSettings");
         Check(TomlSettings.Read(options)["options.dlss_preset"] == "Balanced", "DLSS preference writes the same native options file");
         preset.SelectedIndex = 0; Call(window, "SaveSettings");
-        Check(TomlSettings.Read(options)["options.dlss_preset"] == "DLAA" && Find<ComboBox>(window, "QuickUpscaler").SelectedIndex == 1, "DLAA preference preserves active provider until scene backend is available");
+        Find<ComboBox>(window,"QuickUpscaler").SelectedIndex=2;Call(window,"SaveSettings");
+        Check(TomlSettings.Read(options)["options.dlss_preset"]=="DLAA" && TomlSettings.Read(options)["options.upscaler"]=="DLSS","DLAA and actual DLSS provider share native TOML");
+        typeof(MainWindow).GetMethod("ApplyGpuCapabilities",BindingFlags.NonPublic|BindingFlags.Instance)!.Invoke(window,[false,"fixture unavailable"]);
+        Call(window,"SaveSettings");
+        Check(!preset.IsEnabled && Find<ComboBox>(window,"QuickUpscaler").SelectedIndex==0 && TomlSettings.Read(options)["options.upscaler"]=="Native / Off","unavailable DLSS falls back safely and disables presets");
+        typeof(MainWindow).GetMethod("ApplyGpuCapabilities",BindingFlags.NonPublic|BindingFlags.Instance)!.Invoke(window,[true,""]);
+        Check(preset.IsEnabled,"presets reenable when native NGX probe becomes available");
         Check(Find<ComboBox>(window, "ServerCombo").Items.Cast<ComboBoxItem>().Select(x => x.Content.ToString()).SequenceEqual(new[] { "Offline", "Custom Server" }), "no Hunter's Dream preset");
         Check(TomlSettings.Read(config)["launcher.server_kind"] == "Offline" && TomlSettings.Read(config)["update.check"] == "false", "safe offline first start");
         Check(Find<StackPanel>(window, "GameOptions").Children.Count == 1, "engine enhancements from native schema");
