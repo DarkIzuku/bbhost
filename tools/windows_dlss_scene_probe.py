@@ -28,13 +28,22 @@ def main():
     p.add_argument('--timeout', type=int, default=240)
     p.add_argument('--autopress', required=True, help='Native game test hook; no OS input')
     p.add_argument('--capture-flips', default='', help='Comma-separated presentation flips')
+    p.add_argument('--draw-list', type=int, default=0, help='Diagnostic native draw list at capture flips; alters timing')
+    p.add_argument('--dump-at-draw', default='', help='Native intermediate target readback: pipeline:occurrence:min-flip')
+    p.add_argument('--resize-test', default='', help='Native quiet-point resize hook: flip:WIDTHxHEIGHT[,..]')
     p.add_argument('--scene-dlaa', action='store_true', help='Experimental pre-UI DLAA diagnostic')
+    p.add_argument('--clean-effects', action='store_true', help='Disable game AA/blur/DOF/color fringing to isolate temporal artifacts')
+    p.add_argument('--single-present-queue', action='store_true', help='Overlay A/B diagnostic; use renderer queue for presentation')
     args = p.parse_args()
     runtime, game, seed, root = [v.resolve() for v in (args.runtime, args.game, args.save, args.out)]
-    if not re.fullmatch(r'\d{3,5}x\d{3,5}', args.resolution) or args.flips < 1 or args.timeout < 1:
+    if not re.fullmatch(r'\d{3,5}x\d{3,5}', args.resolution) or args.flips < 1 or args.timeout < 1 or not 0<=args.draw_list<=4096:
         raise ValueError('Invalid resolution, flip count or timeout')
     if args.capture_flips and not re.fullmatch(r'\d+(,\d+)*', args.capture_flips):
         raise ValueError('Capture flips must be a comma-separated list of numbers')
+    if args.resize_test and not re.fullmatch(r'\d+:\d{3,5}x\d{3,5}(,\d+:\d{3,5}x\d{3,5})*', args.resize_test):
+        raise ValueError('Invalid native resize test sequence')
+    if args.dump_at_draw and not re.fullmatch(r'[a-f0-9]+(?:\+[a-f0-9]+)?:\d+:\d+', args.dump_at_draw):
+        raise ValueError('Invalid native pipeline readback selector')
     if args.scene_dlaa and (not args.model_dir or not args.model_dir.is_dir()):
         raise ValueError('DLAA requires the local model directory')
     for protected in (runtime, game, seed, args.cache_source, args.model_dir):
@@ -63,6 +72,9 @@ def main():
     options = config/'options.toml'
     options.write_text('[options]\nresolution = '+json.dumps(args.resolution)+'\nwindow_mode = "Windowed"\nframe_cap = '+
                        json.dumps(args.cap)+'\nupscaler = "Native / Off"\n', encoding='utf-8')
+    if args.clean_effects:
+        with options.open('a',encoding='utf-8') as file:
+            file.write('motion_blur = "Off"\ndepth_of_field = "Off"\nchromatic_aberration = "Off"\nanti_alias = "Off"\n')
     env = {k:v for k,v in os.environ.items() if not k.upper().startswith('BBHOST_')}
     env.update(BBHOST_CONFIG_DIR=str(config), BBHOST_OPTIONS_PATH=str(options), BBHOST_SETUP_WINDOW='0',
                BBHOST_NP_SIGNED_OUT='1', BBHOST_SKIP_INTRO='1', BBHOST_EXIT_FLIP=str(args.flips),
@@ -71,6 +83,14 @@ def main():
         env.update(BBHOST_DLSS_SCENE='1', BBHOST_DLSS_MODEL_PATH=str(args.model_dir.resolve()), BBHOST_DLSS_LOG='1')
     if args.capture_flips:
         env['BBHOST_DUMP_FRAME'] = args.capture_flips
+    if args.draw_list:
+        env['BBHOST_DUMP_DRAWS'] = str(args.draw_list)
+    if args.resize_test:
+        env['BBHOST_RESIZE_TEST'] = args.resize_test
+    if args.dump_at_draw:
+        env['BBHOST_DUMP_AT_DRAW'] = args.dump_at_draw
+    if args.single_present_queue:
+        env['BBHOST_PRESENT_QUEUE'] = '0'
     log_path = root/'run.log'
     code = None
     try:
@@ -88,16 +108,38 @@ def main():
     text = log_path.read_text(encoding='utf-8', errors='replace')
     resolved = [int(n) for n in re.findall(r'temporal-boundary: GX flip=(\d+)[^\n]*resolve=DLAA', text)]
     versions = sorted(set(re.findall(r'loaded model file version=([^;\s]+)', text)))
+    totals = re.findall(r'DLSS: scene evaluations=(\d+); history resets=(\d+)',text)
+    temporal_failures = [line for line in text.splitlines() if
+                         'scene ended without a verified temporal resolve' in line or
+                         ('temporal-boundary:' in line and 'jittered-CBs=0' not in line and
+                          'resolve=audit/native' in line)]
     result = dict(exit_code=code, original_saves_unchanged=True, scene_dlaa=args.scene_dlaa,
                   logged_scene_evaluations=len(resolved), logged_scene_frames=resolved, loaded_model_versions=versions,
                   captures=[f.name for f in sorted((root/'build').glob('frame-*'))],
+                  temporal_failures=temporal_failures,
+                  clean_effects=args.clean_effects,
+                  single_present_queue=args.single_present_queue,
+                  resize_test=args.resize_test,
+                  intermediate_readback=args.dump_at_draw,
+                  intermediate_images=[f.name for f in sorted((root/'build').glob('rtd-*'))],
+                  applied_resizes=re.findall(r'resolution: (\d+x\d+) -> (\d+x\d+) in', text),
+                  scene_evaluations_total=int(totals[-1][0]) if totals else None,
+                  history_resets=int(totals[-1][1]) if totals else None,
                   visual_ghosting_review='pending', performance_measurement=False)
     (root/'result.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
     if code != 0:
         raise RuntimeError('Native game exited with '+str(code))
+    if args.dump_at_draw and not result['intermediate_images']:
+        raise RuntimeError('Requested intermediate pipeline readback was not reached')
     if args.scene_dlaa and len(resolved) < 4:
         raise RuntimeError('Too few actual scene evaluations: NGX initialization alone is not a pass')
-    print(json.dumps(result, indent=2))
+    if args.scene_dlaa and temporal_failures:
+        raise RuntimeError('Temporal scene evaluation fell back during the run; not a DLSS pass')
+    if args.scene_dlaa and (not totals or int(totals[-1][0]) < 64):
+        raise RuntimeError('At least 64 real scene evaluations and an evaluation summary are required')
+    summary = dict(result)
+    summary['intermediate_image_count'] = len(summary.pop('intermediate_images'))
+    print(json.dumps(summary, indent=2))
 
 
 if __name__ == '__main__':

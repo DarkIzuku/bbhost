@@ -457,6 +457,11 @@ bool vk_start() {
     g_vk.device = static_cast<VkDevice>(h.device);
     g_vk.queue = static_cast<VkQueue>(h.queue);
     g_vk.present_queue = static_cast<VkQueue>(h.present_queue);
+    // Diagnostic A/B for external overlays: the existing one-queue fallback
+    // already serializes submit/present correctly. Keep the second queue by
+    // default so normal runs retain the renderer/presenter overlap.
+    if (const char* e = std::getenv("BBHOST_PRESENT_QUEUE"); e && e[0] == '0') g_vk.present_queue = VK_NULL_HANDLE;
+    host_log("present: %s queue for presentation", g_vk.present_queue ? "separate" : "renderer");
     g_vk.family = h.family;
     if (!SDL_Vulkan_CreateSurface(g_window, g_vk.instance, nullptr, &g_vk.surface)) {
         host_log("vulkan: surface creation failed: %s", SDL_GetError());
