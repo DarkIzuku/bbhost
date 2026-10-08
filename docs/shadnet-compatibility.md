@@ -80,7 +80,8 @@ additive upgrades can retain client compatibility. A breaking wire/auth change
 still requires a gateway compatibility implementation or a client update.
 Required validation: account lifecycle, two clients, room create/join/leave,
 summons/invasions, WebAPI, event replay/ack, STUN, NAT/relay and disconnects.
-No live deployment or multiplayer compatibility was tested in this stage.
+Live service availability was checked below; multiplayer compatibility was
+not tested in this stage.
 
 ## Launcher connection controls
 
@@ -110,5 +111,14 @@ This import does not implement the distinct shadNet TCP login endpoint shown
 in shadPS4's settings. The browser manages web passwords; bbhost retains its
 native linked-account/recovery-code flow for compatible servers. The game
 compatibility adapter described above is still required for shadNet.
-Read-only local checks of the supplied WebAPI status and registration URL
-received connection-refused errors; no account credentials were sent.
+Initial read-only checks received connection-refused errors. After the user
+started the deployment, a new check on 2026-10-08 at 02:00 UTC confirmed
+HTTP 200 for WebAPI `/status`, website `/register` and `/login`, and an
+accepted TCP connection on the shadNet login port 31313. No account
+credentials were sent, accounts changed, or authenticated game operations
+performed. Reachability does not establish protocol compatibility.
+
+Native account access is blocked until the displayed server and network
+settings have been applied. Editing a matching/auth endpoint cannot send
+account data through the previously active profile. The browser-page URL
+remains independent; opening it does not send a native account request.

@@ -251,14 +251,29 @@ public partial class MainWindow : Window
     void SetBusy(bool value) { busy = value; SettingsHost.IsEnabled = !value; QuickSettingsGrid.IsEnabled = !value; SaveButton.IsEnabled = !value; Navigation.IsEnabled = !value; UpdateReady(); }
     void UpdateReady() { PlayButton.IsEnabled = !busy && !session.Running && game?.Ok == true; }
 
+    ServerProfile SelectedServer() => ServerProfile.Build(ServerCombo.SelectedIndex == 0,
+        CustomServerBox.Text, NativeApiBox.Text, AuthServerBox.Text, AccountPageBox.Text,
+        OnlineIdBox.Text, P2pPortBox.Text, P2pAddressBox.Text, StunServerBox.Text,
+        VerifyTlsCheck.IsChecked == true, RequireAccountCheck.IsChecked == true);
+
+    bool SelectedServerApplied()
+    {
+        var selected = SelectedServer();
+        if (Path.GetFileNameWithoutExtension(host.Profile) != selected.Name) return false;
+        var applied = TomlSettings.Read(host.Profile);
+        // The browser page is saved independently. Account requests must use
+        // the applied endpoints and network settings, never an old profile
+        // behind controls which the player has just edited.
+        return selected.Values.All(entry => entry.Key == "online.account_page" ||
+            (applied.TryGetValue(entry.Key, out string? value) && value == entry.Value.Trim('"')));
+    }
+
     async void ApplyServer_Click(object sender, RoutedEventArgs e)
     {
         if (state is null || busy || session.Running) return;
         try {
             string kind = ((ComboBoxItem)ServerCombo.SelectedItem).Content.ToString()!;
-            var selected = ServerProfile.Build(kind == "Offline", CustomServerBox.Text, NativeApiBox.Text, AuthServerBox.Text,
-                                              AccountPageBox.Text, OnlineIdBox.Text, P2pPortBox.Text, P2pAddressBox.Text,
-                                              StunServerBox.Text, VerifyTlsCheck.IsChecked == true, RequireAccountCheck.IsChecked == true);
+            var selected = SelectedServer();
             SaveSettings();
             string file = Path.Combine(Path.GetDirectoryName(state.ConfigFile)!, "profiles", selected.Name + ".toml");
             var destinationSnapshot = fingerprints.GetValueOrDefault(file, TomlSettings.Fingerprint(file));
@@ -287,7 +302,10 @@ public partial class MainWindow : Window
     {
         if (busy || session.Running) return;
         if (((ComboBoxItem)ServerCombo.SelectedItem).Content.ToString() == "Offline") { FooterMessage.Text = "Aplica primero un servidor compatible."; return; }
-        try { SaveSettings(); SetBusy(true); AccountDetail.Text = "Abriendo el proceso de cuenta de bbhost..."; await host.AccountAction(action, AccountNameBox.Text.Trim(), RecoveryCodeBox.Password, result => { AccountStatus.Text = result.Account; AccountDetail.Text = result.Outcome + "\n" + result.Detail; }); foreach (var file in fingerprints.Keys.ToArray()) fingerprints[file] = TomlSettings.Fingerprint(file); }
+        try {
+            if (!SelectedServerApplied()) { FooterMessage.Text = "Aplica primero este servidor y sus opciones de red antes de acceder a la cuenta."; return; }
+            SaveSettings(); SetBusy(true); AccountDetail.Text = "Abriendo el proceso de cuenta de bbhost..."; await host.AccountAction(action, AccountNameBox.Text.Trim(), RecoveryCodeBox.Password, result => { AccountStatus.Text = result.Account; AccountDetail.Text = result.Outcome + "\n" + result.Detail; }); foreach (var file in fingerprints.Keys.ToArray()) fingerprints[file] = TomlSettings.Fingerprint(file);
+        }
         catch (Exception ex) { Error(ex); } finally { SetBusy(false); }
     }
     async void RecoverAccount_Click(object sender, RoutedEventArgs e) { await AccountAction("recover"); RecoveryCodeBox.Clear(); }
