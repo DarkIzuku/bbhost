@@ -59,6 +59,7 @@ std::string g_capture_dir;
 namespace {
 struct TemporalScene {
     ScenePassGraph graph;
+    std::unordered_map<std::uint64_t,UpscaleExtent> scene_pixels;
     std::uint64_t flip=~0ull,depth_base=0;
     VkImage depth_image=VK_NULL_HANDLE;
     UpscaleExtent extent;UpscaleConfig config;SceneCamera camera;
@@ -1959,7 +1960,7 @@ bool scene_draw_prepare_locked(const GpuDraw& d,const DrawState& s,const KeyStag
     // It contains no UI: a single pure-scene source, a float color destination,
     // no depth/blending, and a full six-index rectangle. Preserve provenance
     // through that copy; resolve only when the final color reaches the UI path.
-    if(kind==ScenePassKind::Scaleform && render_full && reads.size()==1 && writes.size()==1 &&
+    if(kind==ScenePassKind::Scaleform && full && reads.size()==1 && writes.size()==1 &&
        frame.graph.scene_owned(reads[0]) && !s.depth && !(s.blend[0]&(1u<<30)) && d.index_count==6 &&
        s.color[0] && s.color_mask[0]==15 && (s.color[0]->format==VK_FORMAT_R16G16B16A16_SFLOAT ||
        s.color[0]->format==VK_FORMAT_B10G11R11_UFLOAT_PACK32)) kind=ScenePassKind::Engine;
@@ -1971,6 +1972,7 @@ bool scene_draw_prepare_locked(const GpuDraw& d,const DrawState& s,const KeyStag
     if(frame.primary_draw) {
         ++frame.primary_count;
         frame.depth_base=s.depth->base;frame.depth_image=s.depth->image;frame.graph.seed(writes);
+        for(auto base:writes) frame.scene_pixels[base]=frame.extent;
         const std::uint64_t depth[]={s.depth->base};frame.graph.seed(depth);
     }
     static std::uint64_t trace_frame=~0ull;
@@ -1998,7 +2000,9 @@ bool scene_draw_prepare_locked(const GpuDraw& d,const DrawState& s,const KeyStag
         if(provider && frame.camera_valid && color && depth && depth->image==frame.depth_image && g_temporal_arm_after==~0ull)
             g_temporal_arm_after=flip;
         if(provider && !g_temporal_scene_failed && frame.camera_valid && frame.raster_jittered && color && depth && depth->image==frame.depth_image) {
-            resolved=scene_resolve_locked(*provider,frame.camera,flip,frame.config,*depth,*color,frame.jitter);
+            const auto found=frame.scene_pixels.find(boundary);
+            const auto picture=found==frame.scene_pixels.end()?frame.extent:found->second;
+            resolved=scene_resolve_locked(*provider,frame.camera,flip,frame.config,*depth,*color,picture,frame.jitter);
             frame.resolved=resolved;
             frame.graphics_dirty=true;
         }
@@ -2014,6 +2018,8 @@ bool scene_draw_prepare_locked(const GpuDraw& d,const DrawState& s,const KeyStag
                 static_cast<unsigned long long>(flip),d.gx_token_kind,static_cast<unsigned long long>(boundary),
                 static_cast<unsigned long long>(frame.depth_base),frame.jittered,frame.raster_jittered,frame.camera_valid?1u:0u,resolved?(frame.config.preset==UpscalePreset::NativeAA?"DLAA":"DLSS"):"audit/native");
     }
+    if(full) for(auto base:writes) if(frame.graph.scene_owned(base))
+        frame.scene_pixels[base]=render_full?frame.extent:frame.config.output;
     // Buffer validation also runs during the unjittered bootstrap/audit. Only
     // a boundary proven in an earlier ordered frame permits projection jitter.
     const bool eligible=(provider || g_temporal_graph_audit) && render_full && kind==ScenePassKind::Engine &&
@@ -2108,7 +2114,17 @@ std::unordered_map<std::uint64_t, gcn::TranslateResult> g_paths_cache;  // never
 std::mutex g_paths_ready_mu;
 bool scene_tracking_locked() {return g_temporal_scene.flip!=~0ull;}
 void scene_dispatch_observe_locked(std::span<const std::uint64_t> reads,std::span<const std::uint64_t> writes) {
-    if(g_temporal_scene.flip!=~0ull) g_temporal_scene.graph.observe(ScenePassKind::Engine,false,reads,writes);
+    auto& frame=g_temporal_scene;
+    if(frame.flip==~0ull) return;
+    UpscaleExtent picture{};bool ambiguous=false;
+    for(auto base:reads) if(frame.graph.scene_owned(base)) {
+        const auto found=frame.scene_pixels.find(base);
+        if(found==frame.scene_pixels.end()) continue;
+        if(picture.width && !(picture==found->second)) ambiguous=true;
+        picture=found->second;
+    }
+    frame.graph.observe(ScenePassKind::Engine,false,reads,writes);
+    if(picture.width && !ambiguous) for(auto base:writes) if(frame.graph.scene_owned(base)) frame.scene_pixels[base]=picture;
 }
 std::unordered_map<std::uint64_t, gcn::TranslateResult> g_paths_ready;
 std::atomic<std::uint64_t> g_paths_taken{0}, g_paths_translated{0};

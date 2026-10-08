@@ -32,13 +32,16 @@ def main():
     p.add_argument('--dump-at-draw', default='', help='Native intermediate target readback: pipeline:occurrence:min-flip')
     p.add_argument('--capture-draw', default='', help='Isolated Vulkan draw capture: pipeline:min-flip (alters timing)')
     p.add_argument('--resize-test', default='', help='Native quiet-point resize hook: flip:WIDTHxHEIGHT[,..]')
-    p.add_argument('--scene-dlaa', action='store_true', help='Experimental pre-UI DLAA diagnostic')
+    activation = p.add_mutually_exclusive_group()
+    activation.add_argument('--scene-dlaa', action='store_true', help='Diagnostic activation of the pre-UI scene provider')
+    activation.add_argument('--dlss-from-options', action='store_true', help='Select DLSS through normal TOML options, without a diagnostic activation flag')
     p.add_argument('--preset', choices=['DLAA','Quality','Balanced','Performance','Ultra Performance'], default='DLAA')
     p.add_argument('--clean-effects', action='store_true', help='Disable game AA/blur/DOF/color fringing to isolate temporal artifacts')
     queues = p.add_mutually_exclusive_group()
     queues.add_argument('--single-present-queue', action='store_true', help='Overlay A/B diagnostic; use renderer queue for presentation')
     queues.add_argument('--separate-present-queue', action='store_true', help='Overlay A/B diagnostic; override automatic RTSS compatibility')
     args = p.parse_args()
+    use_dlss = args.scene_dlaa or args.dlss_from_options
     runtime, game, seed, root = [v.resolve() for v in (args.runtime, args.game, args.save, args.out)]
     if not re.fullmatch(r'\d{3,5}x\d{3,5}', args.resolution) or args.flips < 1 or args.timeout < 1 or not 0<=args.draw_list<=4096:
         raise ValueError('Invalid resolution, flip count or timeout')
@@ -50,8 +53,8 @@ def main():
         raise ValueError('Invalid native pipeline readback selector')
     if args.capture_draw and not re.fullmatch(r'[a-f0-9]+(?:\+[a-f0-9]+)?:\d+', args.capture_draw):
         raise ValueError('Invalid native draw capture selector')
-    if args.scene_dlaa and (not args.model_dir or not args.model_dir.is_dir()):
-        raise ValueError('DLAA requires the local model directory')
+    if use_dlss and (not args.model_dir or not args.model_dir.is_dir()):
+        raise ValueError('DLSS requires the local model directory')
     for protected in (runtime, game, seed, args.cache_source, args.model_dir):
         if protected:
             protected = protected.resolve()
@@ -75,9 +78,12 @@ def main():
     toml.write_text('[paths]\napp0 = '+quote(game)+'\ndata = '+quote(data)+'\nmods = '+quote(data/'mods')+
                     '\n[startup]\nsetup_window = false\nskip_intro = true\n[online]\noffline = true\n'
                     '[update]\ncheck = false\n[plugins]\ndebug_menu = false\n', encoding='utf-8')
+    if use_dlss:
+        with toml.open('a', encoding='utf-8') as file:
+            file.write('[upscaling]\ndlss_model_dir = '+quote(args.model_dir.resolve())+'\n')
     options = config/'options.toml'
     options.write_text('[options]\nresolution = '+json.dumps(args.resolution)+'\nwindow_mode = "Windowed"\nframe_cap = '+
-                       json.dumps(args.cap)+'\nupscaler = "Native / Off"\ndlss_preset = '+json.dumps(args.preset)+'\n', encoding='utf-8')
+                       json.dumps(args.cap)+'\nupscaler = '+json.dumps('DLSS' if args.dlss_from_options else 'Native / Off')+'\ndlss_preset = '+json.dumps(args.preset)+'\n', encoding='utf-8')
     if args.clean_effects:
         with options.open('a',encoding='utf-8') as file:
             file.write('motion_blur = "Off"\ndepth_of_field = "Off"\nchromatic_aberration = "Off"\nanti_alias = "Off"\n')
@@ -87,6 +93,8 @@ def main():
                BBHOST_AUTOPRESS=args.autopress, BBHOST_TEMPORAL_AUDIT='1')
     if args.scene_dlaa:
         env.update(BBHOST_DLSS_SCENE='1', BBHOST_DLSS_MODEL_PATH=str(args.model_dir.resolve()), BBHOST_DLSS_LOG='1')
+    elif args.dlss_from_options:
+        env['BBHOST_DLSS_LOG'] = '1'
     if args.capture_flips:
         env['BBHOST_DUMP_FRAME'] = args.capture_flips
     if args.draw_list:
@@ -125,7 +133,8 @@ def main():
                          'scene ended without a verified temporal resolve' in line or
                          ('temporal-boundary:' in line and 'jittered-CBs=0' not in line and
                           'resolve=audit/native' in line)]
-    result = dict(exit_code=code, original_saves_unchanged=True, scene_dlaa=args.scene_dlaa, preset=args.preset,
+    result = dict(exit_code=code, original_saves_unchanged=True, scene_dlaa=args.scene_dlaa,
+                  dlss_from_options=args.dlss_from_options, preset=args.preset,
                   features=re.findall(r'DLSS: feature ([^\n]+)',text),
                   logged_scene_evaluations=len(resolved), logged_scene_frames=resolved, loaded_model_versions=versions,
                   captures=[f.name for f in sorted((root/'build').glob('frame-*'))],
@@ -139,17 +148,19 @@ def main():
                   applied_resizes=re.findall(r'resolution: (\d+x\d+) -> (\d+x\d+) in', text),
                   scene_evaluations_total=int(totals[-1][0]) if totals else None,
                   history_resets=int(totals[-1][1]) if totals else None,
-                  visual_ghosting_review='pending', performance_measurement=False)
+                  visual_corruption_review='pending', visual_ghosting_review='pending', performance_measurement=False)
     (root/'result.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
     if code != 0:
         raise RuntimeError('Native game exited with '+str(code))
     if args.dump_at_draw and not result['intermediate_images']:
         raise RuntimeError('Requested intermediate pipeline readback was not reached')
-    if args.scene_dlaa and len(resolved) < 4:
+    if args.capture_draw and not list((root/'draw-captures').glob('*/manifest.json')):
+        raise RuntimeError('Requested draw capture did not complete')
+    if use_dlss and len(resolved) < 4:
         raise RuntimeError('Too few actual scene evaluations: NGX initialization alone is not a pass')
-    if args.scene_dlaa and temporal_failures:
+    if use_dlss and temporal_failures:
         raise RuntimeError('Temporal scene evaluation fell back during the run; not a DLSS pass')
-    if args.scene_dlaa and (not totals or int(totals[-1][0]) < 64):
+    if use_dlss and (not totals or int(totals[-1][0]) < 64):
         raise RuntimeError('At least 64 real scene evaluations and an evaluation summary are required')
     summary = dict(result)
     summary['intermediate_image_count'] = len(summary.pop('intermediate_images'))

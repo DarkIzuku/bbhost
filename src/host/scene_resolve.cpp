@@ -42,7 +42,7 @@ struct Image {
         initialized=true;
     }
 };
-Image motion,output;std::shared_ptr<SceneMotionPass> pass;VkSampler sampler{};
+Image motion,output,scene_input;std::shared_ptr<SceneMotionPass> pass;VkSampler sampler{};
 VkImageView depth_view{};VkImage viewed_depth{};
 SceneCameraHistory cameras;UpscaleHistory history;
 std::chrono::steady_clock::time_point last_scene;
@@ -57,16 +57,35 @@ void dependency(VkCommandBuffer cmd,VkAccessFlags src,VkAccessFlags dst,VkPipeli
 }
 }
 bool scene_resolve_locked(UpscalerProvider& provider,const SceneCamera& camera,std::uint64_t frame,const UpscaleConfig& requested,
-    RtImage& depth,RtImage& color,TemporalSample jitter) {
+    RtImage& depth,RtImage& color,UpscaleExtent color_picture,TemporalSample jitter) {
     const auto extent=requested.render;
     if(!provider.temporal() || !scene_camera_valid(camera) || !depth.initialised || !color.initialised ||
-       depth.width<extent.width || depth.height<extent.height || color.width<extent.width || color.height<extent.height) return false;
+       depth.width<extent.width || depth.height<extent.height || !color_picture.width || !color_picture.height ||
+       color.width<color_picture.width || color.height<color_picture.height) return false;
     render_end_pass_locked();begin_recording_locked();
     UpscaleConfig config=requested;config.provider=provider.id();
     if(last_depth!=depth.image || last_color!=color.image) {last_depth=depth.image;last_color=color.image;++resource_epoch;}
     config.resource_epoch=resource_epoch;
     if(!pass) pass=std::make_shared<SceneMotionPass>(g.device);
     if(!pass->ready() || !motion.acquire(VK_FORMAT_R16G16_SFLOAT,extent) || !output.acquire(color.format,config.output)) return false;
+    auto color_input=image(color);
+    if(!(color_picture==extent)) {
+        // GX/YEBIS may composite the lower-resolution world into a native-size
+        // post target. Preserve its alpha/effect channels through YEBIS first;
+        // normalize the completed color to the provider's actual input extent.
+        // Scene depth and camera motion already use the real GX render extent.
+        VkFormatProperties properties{};vkGetPhysicalDeviceFormatProperties(g.phys,color.format,&properties);
+        const auto required=VK_FORMAT_FEATURE_BLIT_SRC_BIT|VK_FORMAT_FEATURE_BLIT_DST_BIT|VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+        if((properties.optimalTilingFeatures&required)!=required || !scene_input.acquire(color.format,extent)) return false;
+        scene_input.writable(g_cmd());
+        dependency(g_cmd(),VK_ACCESS_MEMORY_WRITE_BIT,VK_ACCESS_TRANSFER_READ_BIT|VK_ACCESS_TRANSFER_WRITE_BIT,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT);
+        VkImageBlit b{};b.srcSubresource=b.dstSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};
+        b.srcOffsets[1]={static_cast<int>(color_picture.width),static_cast<int>(color_picture.height),1};
+        b.dstOffsets[1]={static_cast<int>(extent.width),static_cast<int>(extent.height),1};
+        vkCmdBlitImage(g_cmd(),color.image,VK_IMAGE_LAYOUT_GENERAL,scene_input.image.image,VK_IMAGE_LAYOUT_GENERAL,1,&b,VK_FILTER_LINEAR);
+        dependency(g_cmd(),VK_ACCESS_TRANSFER_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        color_input=scene_input.image;
+    }
     if(!sampler) {
         VkSamplerCreateInfo c{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};c.magFilter=c.minFilter=VK_FILTER_NEAREST;
         c.mipmapMode=VK_SAMPLER_MIPMAP_MODE_NEAREST;c.addressModeU=c.addressModeV=c.addressModeW=VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
@@ -88,7 +107,7 @@ bool scene_resolve_locked(UpscalerProvider& provider,const SceneCamera& camera,s
     auto depth_input=image(depth);depth_input.view=depth_view;
     if(!pass->record(commands,set,sampler,depth_input,motion.image,extent,reprojection,jitter)) return false;
     dependency(commands,VK_ACCESS_SHADER_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-    UpscaleFrame inputs;inputs.commands=commands;inputs.color=image(color);inputs.depth=depth_input;inputs.motion=motion.image;inputs.output=output.image;
+    UpscaleFrame inputs;inputs.commands=commands;inputs.color=color_input;inputs.depth=depth_input;inputs.motion=motion.image;inputs.output=output.image;
     inputs.input_area={{0,0},{extent.width,extent.height}};
     inputs.output_area={{0,0},{config.output.width,config.output.height}};inputs.stage=UpscaleStage::SceneBeforeUI;
     inputs.jitter=jitter;inputs.engine_jitter_applied=true;
@@ -100,6 +119,10 @@ bool scene_resolve_locked(UpscalerProvider& provider,const SceneCamera& camera,s
     }
     if(reset!=HistoryReset::None) history.invalidate(reset);
     inputs.reset=history.begin(config);
+    if(inputs.reset!=HistoryReset::None)
+        host_log("DLSS: scene after effects picture=%ux%u input=%ux%u output=%ux%u color-format=%d depth=%ux%u",
+            color_picture.width,color_picture.height,extent.width,extent.height,config.output.width,config.output.height,
+            color.format,depth.width,depth.height);
     if(!provider.supports(config,inputs) || !provider.record(config,inputs)) {history.invalidate(HistoryReset::BackendFailure);cameras.clear();return false;}
     dependency(commands,VK_ACCESS_SHADER_WRITE_BIT,VK_ACCESS_TRANSFER_READ_BIT|VK_ACCESS_TRANSFER_WRITE_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT);
     VkImageCopy copy{};copy.srcSubresource=copy.dstSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};copy.extent={config.output.width,config.output.height,1};
@@ -118,7 +141,7 @@ VkImageView scene_resolve_view_locked(std::uint64_t source,std::uint64_t frame) 
 void scene_resolve_shutdown_locked() {
     if(!pass && !sampler && !motion.image.image && !output.image.image) return;
     host_log("DLSS: scene evaluations=%llu; history resets=%llu",static_cast<unsigned long long>(scene_evaluations),static_cast<unsigned long long>(history_resets));
-    render_end_pass_locked();begin_recording_locked();motion.retire();output.retire();
+    render_end_pass_locked();begin_recording_locked();motion.retire();output.retire();scene_input.retire();
     if(depth_view) defer_destroy_private_view(depth_view);depth_view={};viewed_depth={};
     auto keep=std::move(pass);const auto old=sampler;sampler={};const auto device=g.device;
     g.slots[g.slot].retire_functions.push_back([keep=std::move(keep),old,device]{if(old) vkDestroySampler(device,old,nullptr);});

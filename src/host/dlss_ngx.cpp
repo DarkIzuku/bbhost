@@ -351,7 +351,8 @@ bool DlssProvider::supports(const UpscaleConfig& c, const UpscaleFrame& f) const
 bool DlssProvider::record(const UpscaleConfig& c, const UpscaleFrame& f) {
     if (!supports(c, f)) return false;
     auto& i = *impl_;
-    const int flags = 2 | (hdr_format(f.color.format) ? 1 : 0) | (f.depth_inverted ? 8 : 0) | (!f.exposure_image.image ? 64 : 0);
+    const bool hdr=hdr_format(f.color.format);
+    const int flags = 2 | (hdr ? 1 : 0) | (f.depth_inverted ? 8 : 0) | (hdr && !f.exposure_image.image ? 64 : 0);
     const Impl::Key key{c.render, c.output, quality(c.preset), flags};
     bool created = false;
     if (!i.feature || !(key == i.key)) {
