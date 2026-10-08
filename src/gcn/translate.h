@@ -310,7 +310,8 @@ struct TranslateOptions {
     // control point i into window i / tess_patch_control_points at slot
     // i % that, HullTcs runs with v1 = the control point << 8 and reads its
     // user data from StageParams::vertex_formats (set 0 is the evaluation
-    // stage's), and DomainTes reads the window of gl_PrimitiveID.
+    // stage's), and DomainTes reads the window of gl_PrimitiveID. No access
+    // leaves its window: an offset past it takes the window's last dword.
     std::uint32_t tess_window = 0;
     bool tess_quads = true;            // VGT_TF_PARAM type 2; triangles otherwise
     int tess_spacing = 0;              // 0 integer, 1 fractional-odd, 2 fractional-even

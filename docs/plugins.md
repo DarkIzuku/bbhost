@@ -156,6 +156,11 @@ gives the Binary Ninja address.
 - `overlay_file(name, path, data, size)` (v9): a file the game reads instead
   of its own, compressed again when the path ends in `.dcx`. The randomizer
   rewrites map layouts this way.
+- `replace_text(texts, count)` (v11): the game's own text. Every reference to
+  each UTF-16 string in the image - the lea instructions that load its address
+  and the pointers to it in the image's data - names the new text instead; the
+  string itself stays. From `bb_plugin_image` only. The Debug Menu plugin's
+  English is made this way.
 
 **Online rules** (v10)
 
@@ -218,3 +223,8 @@ setup window can download the latest signed plugins from the newest release.
 | `randomizer` | Shuffles one-time pickups and shop stock from a seed, and optionally enemies: each regular enemy becomes another kind (model, AI and gear together), drawn from its own area or from the whole game, with optional roaming bosses. Writes a spoiler file. |
 | `boss_rush` | Fights the 19 story bosses back to back, optionally with the ten chalice-dungeon bosses, starting each round outside the boss's fog wall. Tracks time and deaths. |
 | `mutators` | Switchable rules: gravity, game speed, bullet time at low HP, one-hit deaths, blood drain, enemy HP, echo rate, random effects. |
+| `debug_menu` | Restores the developers' debug menu (`` ` `` opens it), in English or the developers' Japanese, and makes the debug font it draws with from the public-domain X11 fonts k14 and 7x14, so nothing has to be downloaded. Cheating against other players with it gets an account banned; trying it out online with friends is fine. |
+
+The gameplay plugins - all four - announce themselves in the session's
+ruleset, so the server keeps their players' messages, bloodstains and
+statistics apart from those of players without them.

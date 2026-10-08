@@ -6,12 +6,19 @@ bbhost contains no game data. You bring:
 
 1. **The game files**: a dump of Bloodborne with the 1.09 update's files copied
    over it - the folder that contains `dvdroot_ps4`. Its
-   `sce_sys/param.sfo` says `APP_VER 01.09`.
+   `sce_sys/param.sfo` says `APP_VER 01.09`. The update can also stay in a
+   folder of its own beside the game's, named after it with `-UPDATE` (or
+   `-patch`) appended - `CUSA00900` and `CUSA00900-UPDATE`, the way shadPS4
+   keeps a game library. bbhost then reads every file the update has from
+   there and the rest from the game folder, as the console applies an update;
+   the log names the folder (`FS update=`).
 2. **The 1.09 eboot**, decrypted to an ELF. Its SHA-256 must be
    `941f887a562aae054fac35af8cc8f27cf075f3d4cc2e029fb5ae2a663aaa5ae7`. Every
    patch, hook and engine layout in bbhost is an address in that build, so any
    other eboot stops at start with its hash and the version its dump reports.
-   A dump without the update carries the 1.00 eboot, which will not do.
+   A dump without the update carries the 1.00 eboot, which will not do. When
+   `paths.eboot` is not set, the game's own `eboot.bin` is used if it is
+   decrypted already (a dump made for shadPS4), the update folder's first.
 
 Both must come from a copy of the game you own.
 
@@ -68,15 +75,24 @@ menu). F9 opens the plugin menu and F10 bbhost's own settings.
 
 ## Logs
 
-bbhost logs to standard error. On Windows, run it from a console to keep the
-log (`bbhost.exe 2> bbhost.log`); the Linux package's `run-bbhost.sh` writes
-each session's log to `logs/`. A bug report is most useful with that log
-attached.
+bbhost logs to standard error. The packages' `run-bbhost.bat` (Windows) and
+`run-bbhost.sh` (Linux) write each session's log to `logs/`. A bug report is
+most useful with that log attached.
 
 ## Troubleshooting
 
 **The eboot is refused.** It is not the 1.09 build. Use the update's
 `eboot.bin`, decrypted; the message says what the dump's `param.sfo` reports.
+
+**The game stops at start in `FileTransferTask.cpp(865)`, or the log says
+`patch: old-hunters skipped`.** The game folder holds files older than the
+1.09 update's: the update was never copied over it, or only its new files were
+(Windows' "Skip these files" when it asks about the ones already there). The
+log's `change appearance: off - not the 1.09 m21_00_00_00 layout` says the
+same. Copy the update's files over the game folder again, replacing the ones
+there, or keep the update in a `-UPDATE` folder beside it (above). Until The
+Old Hunters' own files are there, bbhost leaves the game as the edition
+without it: its title screen would otherwise be a flat green picture.
 
 **The graphics card stops responding.** When the GPU hangs and the system
 resets it, nothing can be drawn again in that session; bbhost stops the sound,
@@ -85,6 +101,18 @@ markers enabled, so the log of a second hang names the draw that hung - send
 that log. Overlays that hook Vulkan are a common cause: OBS's game capture is
 kept out automatically on AMD cards (`[video] obs_capture` changes that), and
 OBS's Window Capture records bbhost without any hook.
+
+**Wrong picture.** Wrong colours, a green or black screen, missing parts:
+press F12 in the game while it shows. bbhost writes that frame, every render
+target the last draws wrote and the draw list into a folder of its own beside
+the logs, `logs/f12-<date>-<time>/` (`build/` when there is no `logs/`
+folder, `BBHOST_CAPTURE_DIR` to choose), and the log names the folder. Zip it
+and send it with the log; `tools/f12_check.py <folder> <log>` checks it for
+the rendering bugs found so far. The images are PPM, which costs nothing to
+write; `BBHOST_F12_PNG=1` writes PNG instead, which any image viewer opens, a
+fifth of the size on disk, written over a few seconds in the background.
+`BBHOST_F12_TEXTURES=1` adds every texture the frame sampled, and the game
+pauses while it writes them.
 
 **Black or broken image in the world.** On cards with little video memory,
 check the log for `video memory is full`. bbhost sizes its own buffers to the
@@ -122,28 +150,30 @@ bbhost players. The setup window picks the server and links an account; see
 
 ## The debug menu
 
-The developers' debug menu is still in the game, switched off. bbhost restores
-it (the community's "Restore Debug Menu" patch by Whitehawkx and auser1337):
-turn on **Debug menu** in the setup window's Game tab or in PC Settings, start
-the game again, and the `` ` `` key opens and closes it. While it is open the
-character stands still; the arrows move, Enter opens an entry and Backspace
-goes back. Its text is the developers' Japanese.
+The developers' debug menu is still in the game, switched off. The **Debug
+Menu** plugin restores it (the community's "Restore Debug Menu" patch by
+Whitehawkx and auser1337): turn it on in the setup window's Plugins tab and
+start the game again. The `` ` `` key then opens and closes the menu (Key
+Bindings can move it). While it is open the character stands still; the arrows
+move, Enter opens an entry and Backspace goes back. Its text is in English; the
+plugin's **Menu text** setting brings back the developers' Japanese.
 
-The menu draws with a debug font that the game does not ship, so it needs two
-files that bbhost does not include:
+The English is `plugins/debug_menu/strings_en.tsv`: each string's address in the
+1.09 eboot, a hash of the game's text there, and the English - no game text.
+`tools/debug_menu_strings.py list` shows the Japanese beside it from your own
+eboot, `missing` what has no English yet, and `check` tests every row (the
+hash, the printf conversions, the font). Corrections are welcome as pull
+requests.
 
-```
-dvdroot_ps4/adhoc/font/DbgFont14h.ccm
-dvdroot_ps4/adhoc/font/DbgFont14h.tpf
-```
+The menu draws with a debug font the game does not ship. The plugin makes one
+from the public-domain X11 fonts k14 and 7x14, so nothing has to be
+downloaded. A `DbgFont14h.ccm` and `.tpf` of your own in the mods folder
+(`<mods>/dvdroot_ps4/adhoc/font/`; [modding.md](modding.md)) are used instead -
+`tools/build_debug_assets.sh` puts the community "Debug Menu Restoration"
+package's original font there.
 
-They are part of the "Debug Menu Restoration" mod package. Put them in the
-mods folder (`<data>/mods` unless `paths.mods` names another; see
-[modding.md](modding.md)) as `<mods>/dvdroot_ps4/adhoc/font/DbgFont14h.ccm` and
-`.tpf`, so the game dump stays untouched; a copy in the dump's
-`dvdroot_ps4/adhoc/font/` works too. `tools/build_debug_assets.sh` extracts
-them from the package's archive. The debug font shaders that come with it are
-not needed: the patch skips them.
-
-Without the font the option stays off - the game would crash at start - and
-the log says which file is missing (`debug-menu: off - ... is missing`).
+**Playing online:** the menu can hand out items and change the rules, so
+sessions with the plugin on keep their messages, bloodstains and statistics
+apart from other players'. Using it to cheat against other players - in their
+worlds, in invasions or on the leaderboards - gets an account banned. Trying it
+out online with friends is fine.

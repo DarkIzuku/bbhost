@@ -74,8 +74,9 @@ const BindingInfo kInfo[kBindCount] = {
 
     // The developers' debug menu: not a pad press at all. The patch opens it
     // on the touchpad's left side, which is also Gestures; this key toggles
-    // the menu itself (engine/debug_menu.h), when PC Settings has it on.
-    {"debug_menu", "Debug Menu", "Opens and closes the developers' debug menu, when PC Settings has it on.", 0, "`", 0},
+    // the menu itself (engine/debug_menu.h), when the Debug Menu plugin is
+    // on. The Key Bindings screen lists it only then.
+    {"debug_menu", "Debug Menu", "Opens and closes the developers' debug menu (the Debug Menu plugin).", 0, "`", 0},
 };
 
 // Earlier names a bbhost.toml may still use.

@@ -29,14 +29,6 @@ name=bbhost-linux-$rev
 dir=$out/$name
 rm -rf "$dir"
 mkdir -p "$dir/data" "$dir/logs" "$dir/plugins" "$dir/build"
-# The debug menu's font and font shaders (engine/debug_menu.h): the retail
-# disc has none, and the debug_menu option refuses without them, so the
-# package carries them in its asset overlay (data/mods, ./data in bbhost.toml).
-if [ -f "tmp/Debug Menu Restoration.7z" ]; then
-    tools/build_debug_assets.sh "tmp/Debug Menu Restoration.7z" "$dir/data/mods/dvdroot_ps4/adhoc" > /dev/null
-else
-    echo "WARNING: no tmp/Debug Menu Restoration.7z - this package has no debug menu" >&2
-fi
 cp -r patches "$dir/patches"
 cp include/bbhost_plugin.h "$dir/plugins/"
 cp LICENSE "$dir/LICENSE"
@@ -97,8 +89,9 @@ You need
     941f887a562aae054fac35af8cc8f27cf075f3d4cc2e029fb5ae2a663aaa5ae7; bbhost
     stops at start and says why when it is another version), and the game
     dump with the 1.09 update's files copied over it: the CUSA00900 folder
-    that contains dvdroot_ps4, whose sce_sys/param.sfo says APP_VER 01.09.
-    Neither is in this package.
+    that contains dvdroot_ps4, whose sce_sys/param.sfo says APP_VER 01.09
+    (or the update kept beside it in CUSA00900-UPDATE, the way shadPS4 keeps
+    a game library). Neither is in this package.
 
 Built static: libstdc++ ($glibcxx), SDL3, ffmpeg (movie decoders only),
 SPIRV-Tools.
@@ -163,9 +156,12 @@ Plugins
       randomizer = true    # every pickup and shop shuffled from a seed
       boss_rush = true     # the game's bosses back to back, timed
       mutators = true      # speed, bullet time, one-hit, chaos and more
+      debug_menu = true    # the developers' debug menu: \` opens it
   Each one's settings go in a section of its own name ([randomizer],
   [boss_rush], [mutators]); docs/plugins.md in the repository lists them.
-  Use the boss rush on a save of its own.
+  Use the boss rush on a save of its own. Cheating against other players
+  with the debug menu gets an account banned; trying it out online with
+  friends is fine.
 
 Reporting a problem
   Send the log of that session from logs/ (privately: it contains your
@@ -173,6 +169,15 @@ Reporting a problem
   GPU. If the game crashed, the log ends with a block starting "SIGSEGV pc="
   with the registers and the frames; the release's $name.debug symbolizes
   it.
+
+  A wrong picture (wrong colours, a green or black screen, missing parts):
+  press F12 in the game while it shows. bbhost writes that frame, the images
+  the game drew it from and its list of draws into a folder of its own in
+  logs/ (logs/f12-<date>-<time>; the log names it). Pack that folder
+  (tar czf f12.tar.gz logs/f12-<date>-<time>) and send it with the log.
+  BBHOST_F12_PNG=1 ./run-bbhost.sh writes PNG files instead of PPM (any
+  image viewer opens them, a fifth of the size); BBHOST_F12_TEXTURES=1 adds
+  every texture the frame used (the game pauses while it writes them).
 EOF
 
 # Packed from a local copy with plain modes: on a filesystem without them

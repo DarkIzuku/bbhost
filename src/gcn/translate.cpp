@@ -2588,7 +2588,15 @@ struct Translator {
     // ---- LDS
     Id lds_ptr(Id byte_addr) {
         if (lds_in_buffer) {
-            const Id at = m.emit(spv::OpIAdd, t_u64, {lds_base64, m.emit(spv::OpUConvert, t_u64, {iand(byte_addr, cu(~3u))})});
+            Id off = iand(byte_addr, cu(~3u));
+            // With a window a patch, every access the stages mean to make is
+            // inside the patch's own window. One past it - an offset worked
+            // out from a value nothing wrote, or a lane taken for another -
+            // reached memory the GPU has not mapped, and the device was lost
+            // (an RX 9070 XT in the game's own hull draws, 2026-10-08): it
+            // takes the window's last dword instead, a wrong value at worst.
+            if (opt.tess_window >= 4) off = m.ext_inst(t_u32, spv::GlslUMin, {off, cu((opt.tess_window - 4) & ~3u)});
+            const Id at = m.emit(spv::OpIAdd, t_u64, {lds_base64, m.emit(spv::OpUConvert, t_u64, {off})});
             const Id block = m.emit(spv::OpConvertUToPtr, p_psb_block, {at});
             return m.access_chain(p_psb_u32, block, {c_zero_u});
         }

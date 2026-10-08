@@ -3102,7 +3102,14 @@ void report_device_fault() {
         host_log("    not in any imported region (sink 0x%llx, l1 0x%llx)", static_cast<unsigned long long>(g.sink.address),
                  static_cast<unsigned long long>(g.l1.address));
     };
-    for (std::uint32_t i = 0; i < counts.addressInfoCount && i < 8; ++i) describe(addrs[i].reportedAddress);
+    for (std::uint32_t i = 0; i < counts.addressInfoCount && i < 8; ++i) {
+        describe(addrs[i].reportedAddress);
+        // And where it is against the tessellation LDS ring, the buffer the
+        // game's own hull draws keep their patches in (an RX 9070 XT lost the
+        // device in those draws on a read nowhere near any import, 2026-10-08).
+        const std::string tess = tess_lds_describe(addrs[i].reportedAddress, addrs[i].addressPrecision);
+        if (!tess.empty()) host_log("    %s", tess.c_str());
+    }
     for (std::uint32_t i = 0; i < counts.vendorInfoCount && i < 8; ++i) {
         host_log("  vendor %u: %s (code 0x%llx, data 0x%llx)", i, vendors[i].description,
                  static_cast<unsigned long long>(vendors[i].vendorFaultCode),

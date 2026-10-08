@@ -52,8 +52,11 @@ add_executable(bbhost
   src/host/plugins.cpp
   src/core/tls_rewrite.cpp
   src/core/config.cpp
+  src/engine/image_text.cpp
   src/core/sha256.cpp
   src/core/sfo.cpp
+  src/core/image_file.cpp
+  src/host/tess_lds.cpp
   src/engine/guest.cpp
   src/engine/patch_manifest.cpp
   src/engine/gx_resources.cpp
@@ -188,6 +191,21 @@ endfunction()
 bb_plugin(randomizer plugins/randomizer/randomizer.cpp)
 bb_plugin(boss_rush plugins/boss_rush/boss_rush.cpp)
 bb_plugin(mutators plugins/mutators/mutators.cpp)
+# The Debug Menu plugin carries its glyphs (plugins/debug_menu/font14.bin,
+# tools/make_debug_font.py) as bytes: build/gen/debug_font14.inc, rewritten
+# only when the file changes.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/plugins/debug_menu/font14.bin)
+file(READ ${CMAKE_SOURCE_DIR}/plugins/debug_menu/font14.bin BB_FONT14_HEX HEX)
+string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," BB_FONT14_BYTES "${BB_FONT14_HEX}")
+file(WRITE ${CMAKE_BINARY_DIR}/gen/debug_font14.inc.new "${BB_FONT14_BYTES}\n")
+configure_file(${CMAKE_BINARY_DIR}/gen/debug_font14.inc.new ${CMAKE_BINARY_DIR}/gen/debug_font14.inc COPYONLY)
+# ... and its English (plugins/debug_menu/strings_en.tsv) as a string.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/plugins/debug_menu/strings_en.tsv)
+file(READ ${CMAKE_SOURCE_DIR}/plugins/debug_menu/strings_en.tsv BB_DEBUG_MENU_EN)
+file(WRITE ${CMAKE_BINARY_DIR}/gen/debug_menu_strings_en.inc.new "R\"tsv(${BB_DEBUG_MENU_EN})tsv\"\n")
+configure_file(${CMAKE_BINARY_DIR}/gen/debug_menu_strings_en.inc.new ${CMAKE_BINARY_DIR}/gen/debug_menu_strings_en.inc COPYONLY)
+bb_plugin(debug_menu plugins/debug_menu/debug_menu.cpp)
+target_include_directories(bb_plugin_debug_menu PRIVATE ${CMAKE_BINARY_DIR}/gen)
 
 target_link_libraries(bbhost PRIVATE atrac9 monocypher)
 # A release build (the release workflow) looks for updates by default; one
@@ -326,6 +344,10 @@ if(UNIX)
   find_package(Python3 COMPONENTS Interpreter QUIET)
   if(Python3_Interpreter_FOUND)
     add_test(NAME world_baseline_test COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/world_baseline_test.py)
+    # The Debug Menu plugin's English against the 1.09 eboot: skipped without
+    # one (BBHOST_EBOOT, or eboot-109-decrypted.bin in the checkout).
+    add_test(NAME debug_menu_strings_test COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/debug_menu_strings.py check)
+    set_tests_properties(debug_menu_strings_test PROPERTIES SKIP_RETURN_CODE 77)
   endif()
   add_executable(thunk_args tests/thunk_args.cpp src/core/thunk.cpp src/core/tls_rewrite.cpp src/core/portable.cpp src/hle/sysv_va.cpp src/host/main_wait.cpp)
   target_include_directories(thunk_args PRIVATE src)
@@ -345,6 +367,17 @@ if(UNIX)
   add_executable(stun_test tests/stun_test.cpp src/net/stun.cpp)
   target_include_directories(stun_test PRIVATE src)
   add_test(NAME stun_test COMMAND stun_test)
+  add_executable(tess_lds_test tests/tess_lds_test.cpp src/host/tess_lds.cpp)
+  target_include_directories(tess_lds_test PRIVATE src)
+  add_test(NAME tess_lds_test COMMAND tess_lds_test)
+  add_executable(debug_font_test tests/debug_font_test.cpp)
+  target_include_directories(debug_font_test PRIVATE plugins/debug_menu)
+  target_compile_definitions(debug_font_test PRIVATE BB_FONT14_PATH="${CMAKE_SOURCE_DIR}/plugins/debug_menu/font14.bin")
+  add_test(NAME debug_font_test COMMAND debug_font_test)
+  add_executable(image_file_test tests/image_file_test.cpp src/core/image_file.cpp)
+  target_include_directories(image_file_test PRIVATE src)
+  target_link_libraries(image_file_test PRIVATE ZLIB::ZLIB)
+  add_test(NAME image_file_test COMMAND image_file_test)
   add_executable(config_test tests/config_test.cpp src/core/config.cpp src/core/sfo.cpp)
   target_include_directories(config_test PRIVATE src ${CMAKE_BINARY_DIR}/gen)
   add_dependencies(config_test bbhost_version)
@@ -418,6 +451,9 @@ if(UNIX)
     target_link_libraries(gcn_translate_test PRIVATE gcn ${SPIRV_TOOLS_LIB})
     add_test(NAME gcn_translate_test COMMAND gcn_translate_test)
   set_tests_properties(gcn_translate_test PROPERTIES SKIP_RETURN_CODE 77)
+    add_executable(gcn_lds_window_test tests/gcn_lds_window_test.cpp)
+    target_link_libraries(gcn_lds_window_test PRIVATE gcn ${SPIRV_TOOLS_LIB})
+    add_test(NAME gcn_lds_window_test COMMAND gcn_lds_window_test)
     add_executable(gcn_lift_test tests/gcn_lift_test.cpp)
     target_link_libraries(gcn_lift_test PRIVATE gcn ${SPIRV_TOOLS_LIB})
     add_test(NAME gcn_lift_test COMMAND gcn_lift_test)
@@ -447,7 +483,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND CMAKE_CROSSCOMPILING)
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     # The official plugins too: the package carries them, and a CI build makes
     # nothing it is not asked for (v0.2.0's Windows zip shipped without them).
-    DEPENDS bbhost bb_plugin_randomizer bb_plugin_boss_rush bb_plugin_mutators
+    DEPENDS bbhost bb_plugin_randomizer bb_plugin_boss_rush bb_plugin_mutators bb_plugin_debug_menu
     USES_TERMINAL)
 else()
   add_custom_target(smoke

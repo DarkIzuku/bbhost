@@ -34,7 +34,9 @@ bool host_gpu_blit_display(void*, std::uint64_t, void*, std::int32_t, std::int32
                            std::uint32_t, std::uint32_t, std::uint32_t, void*) { return false; }
 bool host_gpu_dump_display(std::uint64_t, const char*, bool) { return false; }
 void host_gpu_request_dump() {}
-bool host_gpu_take_dump_request() { return false; }
+bool host_gpu_take_dump_request(std::string*) { return false; }
+std::string host_gpu_capture_dir() { return {}; }
+const char* host_gpu_capture_ext() { return ".ppm"; }
 void host_gpu_glitch_watch(std::uint64_t, std::uint64_t) {}
 std::uint64_t host_gpu_draw_mark() { return 0; }
 std::uint64_t host_gpu_work_needs() { return 0; }

@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Check an F12 dump for the rendering bug patterns found so far.
 
-    tools/f12_check.py build/f12-<flip>-draws.txt [run.log]
+    tools/f12_check.py <capture folder | f12-<flip>-draws.txt> [run.log]
+
+F12 writes each capture into a folder of its own (logs/f12-<date>-<time>/ in
+a package, build/f12-<date>-<time>/ in a checkout; the log names it): the
+frame and the render targets as PNG, the draw list as f12-<flip>-draws.txt.
 
 Each check is a pattern that has broken frames before:
 
@@ -24,6 +28,8 @@ Each check is a pattern that has broken frames before:
              last upload (copy tokens "as memory"): the new bytes never reached
              the image (the opening movie's green chroma plane).
 """
+import glob
+import os
 import re
 import sys
 
@@ -32,6 +38,19 @@ def main():
     if len(sys.argv) < 2:
         sys.exit(__doc__)
     path = sys.argv[1]
+    if os.path.isdir(path):
+        lists = sorted(glob.glob(os.path.join(path, 'f12-*-draws.txt')))
+        if not lists:
+            sys.exit('%s: no f12-<flip>-draws.txt in it' % path)
+        for n, draws in enumerate(lists):
+            if len(lists) > 1:
+                print('%s== %s' % ('\n' if n else '', draws))
+            check(draws)
+        return
+    check(path)
+
+
+def check(path):
     L = open(path, errors='replace').read().split('\n')
     start = next((i for i, l in enumerate(L) if re.match(r'^\d+ textures', l)), len(L))
     events = [l for l in L if re.match(r'^flip \d+: ', l)]
@@ -139,10 +158,10 @@ def main():
 
     # floats
     if len(sys.argv) > 2:
-        flip = re.search(r'f12-(\d+)', path)
+        flip = re.search(r'f12-(\d+)-draws', os.path.basename(path))
         rows = []
         for l in open(sys.argv[2], errors='replace'):
-            m = re.search(r'f12-%s-rt-([0-9a-f]+)\.ppm float channels: max (\S+) (\S+) (\S+), infinite (\d+) (\d+) (\d+), NaN (\d+) (\d+) (\d+)'
+            m = re.search(r'f12-%s-rt-([0-9a-f]+)\.(?:ppm|png) float channels: max (\S+) (\S+) (\S+), infinite (\d+) (\d+) (\d+), NaN (\d+) (\d+) (\d+)'
                           % (flip.group(1) if flip else r'\d+'), l)
             if m:
                 inf = sum(int(m.group(i)) for i in (5, 6, 7))

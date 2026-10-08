@@ -28,6 +28,7 @@
 #include "host/plugin_ui.h"
 #endif
 #include "host/settings.h"
+#include "engine/debug_menu.h"
 #include "host/plugins.h"
 #include "host/sampler.h"
 #include "host/audio.h"
@@ -688,6 +689,7 @@ void on_segv(int sig, siginfo_t* info, void* ctx) {
         }
     }
     sf_heap_probe_crash_report();
+    hle_fs_log_recent_opens();
     hle_gnm_dump_recent_writes(0, 48);
     signal(sig, SIG_DFL);
     raise(sig);
@@ -928,14 +930,37 @@ int main(int argc, char** argv) {
         const HostConfig& c = config();
         host_log("pc enhancements: mirror %s, rebirth %s, five players %s", c.change_appearance ? "on" : "off", c.rebirth ? "on" : "off",
                  c.five_players ? "on" : "off");
-        if (h.debug_camera && h.debug_menu)
-            host_log("debug camera: on with the debug menu - its LOAD TEST and DUNGEON MOVEMAP TEST crash the game "
-                     "(the camera's code takes their step's place)");
+        // The debug menu was a PC Settings switch before the Debug Menu plugin
+        // took its place: a player who had it on gets the plugin turned on,
+        // once, and the old switch goes off.
+        if (h.debug_menu) {
+            if (config_value("plugins.debug_menu").empty()) {
+                config_set_values(config_user_file(), {{"plugins", "debug_menu", "true"}});
+                config_value_set("plugins.debug_menu", "true");
+                host_log("debug-menu: PC Settings had it on; the Debug Menu plugin is turned on in its place");
+            }
+            host_opt_set("debug_menu", false);
+            host_options_save_now();
+        }
+    }
+    if (const App0Version v = config_app0_version(cfg.app0); v.app_ver.empty()) {
+        host_log("app0: no sce_sys/param.sfo could be read in %s - is it the whole game folder?", cfg.app0.c_str());
+    } else {
+        host_log("app0: the game folder is version %s (category %s)%s%s", v.app_ver.c_str(), v.category.c_str(),
+                 v.update.empty() ? "" : ", with its update read from ", v.update.c_str());
+        if (v.app_ver != "01.09")
+            host_log("app0: WARNING - the 1.09 eboot needs the 1.09 update's files, and this game folder is version %s. "
+                     "Copy the update's files over it (its sce_sys/param.sfo then says APP_VER 01.09); without them "
+                     "the game stops when it reads a file only the update has.",
+                     v.app_ver.c_str());
     }
     hle_fs_set_roots(cfg.app0.c_str(), cfg.data.empty() ? nullptr : cfg.data.c_str(),
                      cfg.tmp.empty() ? nullptr : cfg.tmp.c_str(), eboot,
                      cfg.mods.empty() ? nullptr : cfg.mods.c_str());
     plugins_load();  // before the HLE table is bound: a plugin may replace an import
+    if (host_settings().debug_camera && plugins_active("debug_menu"))
+        host_log("debug camera: on with the debug menu - its LOAD TEST and DUNGEON MOVEMAP TEST crash the game "
+                 "(the camera's code takes their step's place)");
     register_hle();
 
     ElfImage image{};
@@ -971,6 +996,9 @@ int main(int argc, char** argv) {
 
     hle_patch_guest(&image);
     plugins_image(&image);  // the plugins' patches and hooks, after the host's own
+    // The developers' debug menu, when the Debug Menu plugin is on: after the
+    // plugins' image phase, which writes its font (engine/debug_menu.h).
+    debug_menu_install(&image);
 
     bool windowed = false;
     host_log("config: %s headless=%d %dx%d", cfg.config_layers.empty() ? "(none)" : cfg.config_layers.c_str(),

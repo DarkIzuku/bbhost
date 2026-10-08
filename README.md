@@ -58,8 +58,8 @@ to run on a PC - it needs a place to live. bbhost provides that place:
   bloodstains and summon signs between bbhost players.
 - **Mods** without touching the game files: replacement files, param tables
   edited by field name, byte patches as data, and native plugins - a
-  randomizer (items, shops and enemies), a boss rush and gameplay mutators
-  ship with it.
+  randomizer (items, shops and enemies), a boss rush, gameplay mutators and
+  the developers' own debug menu ship with it.
 - **A setup window** that finds and checks your game files, and the Steam Deck
   as a supported device.
 
@@ -101,7 +101,8 @@ See [docs/rendering.md](docs/rendering.md) for the graphics in detail and
 ## Getting started
 
 1. Get the game files: a dump of Bloodborne with the 1.09 update copied over
-   it, and the 1.09 `eboot.bin` decrypted to an ELF (SHA-256
+   it (or kept beside it as `CUSA00900-UPDATE`, the way shadPS4 keeps it), and
+   the 1.09 `eboot.bin` decrypted to an ELF (SHA-256
    `941f887a562aae054fac35af8cc8f27cf075f3d4cc2e029fb5ae2a663aaa5ae7`).
 2. Download a release for Windows or Linux, or build bbhost yourself.
 3. Start `bbhost`. The setup window asks for the two paths, checks them and
@@ -176,7 +177,9 @@ third_party/     LibAtrac9, Dear ImGui, Monocypher
 
 bbhost is free software, licensed under the GNU General Public License,
 version 3 or later (see [LICENSE](LICENSE)). The third-party code in
-`third_party/` and `src/host/shaders/fsr1/` keeps its own licenses.
+`third_party/` and `src/host/shaders/fsr1/` keeps its own licenses. The debug
+menu's glyphs (`plugins/debug_menu/font14.bin`) come from the X11 fonts k14
+and 7x14, which are in the public domain.
 
 Bloodborne is a trademark of Sony Interactive Entertainment. bbhost is not
 affiliated with or endorsed by Sony or FromSoftware, and contains none of the

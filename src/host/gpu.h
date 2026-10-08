@@ -418,13 +418,20 @@ void host_gpu_wait_submitted(std::uint64_t ticket);
 bool host_gpu_blit_display(void* cmd, std::uint64_t display_va, void* dst_image, std::int32_t dst_x, std::int32_t dst_y,
                            std::uint32_t dst_w, std::uint32_t dst_h, std::uint32_t src_width, std::uint32_t src_height,
                            std::uint32_t src_x = 0, std::uint32_t src_y = 0, void* dst_storage_view = nullptr);
-// Writes the displayed render target as a binary PPM (headless inspection).
-// `all_targets`: also every colour RT (F12) as <stem>-rt-<base>.ppm and the
-// last recorded draws to the log. Same as BBHOST_DUMP_ALL=1 for a timed dump.
+// Writes the displayed render target as an image: PNG when the path ends in
+// ".png", binary PPM otherwise (headless inspection). `all_targets`: also
+// every colour RT (F12) as <stem>-rt-<base> in the same format and the draw
+// list as <stem>-draws.txt. Same as BBHOST_DUMP_ALL=1 for a timed dump.
 bool host_gpu_dump_display(std::uint64_t display_va, const char* path, bool all_targets = false);
-// F12: dump on the next flip. Window thread sets, flip consumes.
+// F12: dump on the next flip, into a new folder of its own beside the logs
+// (logs/ or build/, BBHOST_CAPTURE_DIR), which the request makes and logs.
+// Window thread (or BBHOST_F12_AT) sets, the flip takes it with its folder.
 void host_gpu_request_dump();
-bool host_gpu_take_dump_request();
+bool host_gpu_take_dump_request(std::string* dir);
+// The folder of the capture asked for last ("" before the first).
+std::string host_gpu_capture_dir();
+// The capture's image format: ".ppm", or ".png" with BBHOST_F12_PNG=1.
+const char* host_gpu_capture_ext();
 // BBHOST_RT_REFILL_TEST=1: a re-created target starts with the fill its old image took (render.cpp).
 void host_gpu_refill_selftest();
 void host_gpu_stall_test(unsigned ms);

@@ -184,7 +184,6 @@ LauncherResult launcher_run(const HostConfig& cfg, const std::string& reason, bo
     host_options_load();
     bool fullscreen = host_opt_index("window_mode") == 1;
     bool skip_logos = host_opt_get("skip_logos");
-    bool debug_menu = host_opt_get("debug_menu");
     bool debug_camera = host_opt_get("debug_camera");
     int frame_cap = host_opt_frame_cap();
     int resolution = host_opt_resolution_index();
@@ -315,7 +314,6 @@ LauncherResult launcher_run(const HostConfig& cfg, const std::string& reason, bo
         all_post_processors_was = all_post_processors;
         host_opt_set_index("window_mode", fullscreen ? 1 : 0);
         host_opt_set("skip_logos", skip_logos);
-        host_opt_set("debug_menu", debug_menu);
         host_opt_set("debug_camera", debug_camera);
         host_opt_set_frame_cap(kCaps[cap_choice]);
         host_opt_set_resolution_index(resolution);
@@ -503,6 +501,26 @@ LauncherResult launcher_run(const HostConfig& cfg, const std::string& reason, bo
             f[kEboot].set(prepared.ok ? prepared.eboot : "");
             eboot = check_eboot(f[kEboot].str());
         }
+        if (app0_ok) {
+            // Its version: the 1.09 update's files copied over it, or in an
+            // update folder beside it (core/config.h), or the game stops when
+            // it reads one. A warning, not a stop: Play stays on.
+            static std::string seen, good;
+            static App0Version ver;
+            if (seen != app0) {
+                seen = app0;
+                ver = config_app0_version(app0);
+                good = ver.update.empty() ? std::string("version 01.09 (the update's files are in it)")
+                                          : "version 01.09, the update read from " + fs::path(ver.update).filename().string();
+            }
+            status_line(ver.app_ver == "01.09", good.c_str(),
+                        ver.app_ver.empty() ? std::string("no sce_sys/param.sfo in it - is it the whole game folder?")
+                                            : "version " + ver.app_ver +
+                                                  (ver.update.empty() ? std::string()
+                                                                      : " (in " + fs::path(ver.update).filename().string() + ")") +
+                                                  " - copy the 1.09 update's files over this folder, or the game stops "
+                                                  "while loading");
+        }
         status_line(eboot.ok, "Bloodborne 1.09 validated and ready", preparation_error);
         path_row("Data folder (saves and caches; empty for the default)", kData, true, config_default_data_dir().c_str());
 
@@ -592,8 +610,6 @@ LauncherResult launcher_run(const HostConfig& cfg, const std::string& reason, bo
         ImGui::Checkbox("Fullscreen", &fullscreen);
         ImGui::SameLine(260 * scale);
         ImGui::Checkbox("Skip company logos", &skip_logos);
-        ImGui::Checkbox("Debug menu", &debug_menu);
-        ImGui::SameLine(260 * scale);
         ImGui::Checkbox("Debug camera", &debug_camera);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Lance McDonald's free camera: hold Interact (E) and press L3 (Left Ctrl). The debug menu's LOAD TEST crashes while it is on.");

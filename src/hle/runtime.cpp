@@ -1,4 +1,5 @@
 #include "hle/hle.h"
+#include "hle/fs.h"
 #include "hle/np.h"
 #include "hle/common.h"
 #include "hle/guest_fs.h"
@@ -11,7 +12,6 @@
 #include "engine/key_prompts.h"
 #include "engine/menu_pointer.h"
 #include "engine/option_menu.h"
-#include "engine/debug_menu.h"
 #include "engine/summon_invite.h"
 #include "engine/np_test.h"
 #include "engine/gx_resources.h"
@@ -128,6 +128,13 @@ GUEST_ABI void hle_dl_panic(const char* file, int line, const char* msg, std::ui
     if (logged.fetch_add(1) < 64) {
         host_log("DL_PANIC %s(%d): %s", file ? file : "?", line, msg ? msg : "?");
         panic_backtrace(rsp, rbp);
+        if (const std::string files = hle_fs_problem_files(); !files.empty())
+            host_log("DL_PANIC: game files found missing or empty, newest last: %s", files.c_str());
+        hle_fs_log_recent_opens();
+        if (file && std::strstr(file, "FileTransferTask"))
+            host_log("DL_PANIC: the game's file loader stopped on a file it could not read: a game file is missing or "
+                     "empty. The 1.09 update's files must be copied over the game folder (its sce_sys/param.sfo then "
+                     "says APP_VER 01.09), and the dump must be complete.");
     }
     if (keep_going) {
         return;
@@ -374,8 +381,6 @@ void hle_patch_guest(ElfImage* image) {
     // (engine/frame_pool.h). BBHOST_POOL_FIX=0 keeps the game's.
     frame_pool_install(image);
     graphics_patch_install(image);
-    // The developers' debug menu, when the player turned it on (engine/debug_menu.h).
-    debug_menu_install(image);
     // The co-op invite as a type-1 item for the game's own summon manager
     // (engine/summon_invite.h): off, the game's own invite is used;
     // BBHOST_SUMMON_INVITE=1 brings ours back for experiments.

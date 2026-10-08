@@ -1867,7 +1867,16 @@ GUEST_ABI int hle_pad_read(int handle, std::uint8_t* st) {
     }
     g_pad_delivered.store(p.buttons, std::memory_order_relaxed);
     // The Debug Menu key, on the thread that reads the pad (engine/debug_menu.h).
-    if (host_bind_take_debug_toggle()) {
+    // BBHOST_DEBUG_MENU_AT=N (a test aid) presses it once at flip N; the pad
+    // then works the open menu, so BBHOST_AUTOPRESS can walk its pages.
+    static const std::uint64_t debug_at = [] {
+        const char* e = std::getenv("BBHOST_DEBUG_MENU_AT");
+        return e && e[0] ? std::strtoull(e, nullptr, 0) : 0ull;
+    }();
+    static bool debug_pressed = false;
+    const bool scripted = debug_at && !debug_pressed && hle_video_flip_count() >= debug_at;
+    if (scripted) debug_pressed = true;
+    if (host_bind_take_debug_toggle() || scripted) {
         debug_menu_toggle();
     }
     std::memcpy(st + 0, &p.buttons, 4);

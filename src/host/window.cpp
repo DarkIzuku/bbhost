@@ -1288,8 +1288,7 @@ bool host_window_pump() {
                     break;
                 }
                 if (!e.key.repeat && e.key.scancode == SDL_SCANCODE_F12) {
-                    host_gpu_request_dump();
-                    host_log("dump: F12, writing display + colour targets on the next flip");
+                    host_gpu_request_dump();  // it logs the capture's folder
                     break;
                 }
                 std::lock_guard<std::mutex> lock(g_text_mu);

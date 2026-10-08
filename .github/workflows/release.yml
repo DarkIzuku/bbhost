@@ -17,11 +17,8 @@
 # than publish unsigned). The same key signs the official plugins each
 # package carries (tools/package_plugins.sh: plugins/<name>.so|.dll + .sig).
 #
-# The debug menu's font (engine/debug_menu.h) comes from a mod archive that
-# is not in the repository: it is an asset of the pre-release tagged
-# build-assets (GitHub names it Debug.Menu.Restoration.7z - an asset name has
-# no spaces) and the packages carry it; without it they build without the
-# debug menu.
+# The debug menu's font (engine/debug_menu.h) is the Debug Menu plugin's own,
+# made from public-domain fonts (plugins/debug_menu): nothing is fetched.
 name: release
 on:
   push:
@@ -43,12 +40,6 @@ jobs:
           key: deps-${{ runner.os }}-${{ hashFiles('tools/ci_build.sh') }}
       - name: build
         run: CI_PORTABLE=1 CI_CMAKE_ARGS="-DBBHOST_RELEASE=ON" tools/ci_build.sh
-      - name: debug menu assets
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          command -v 7z > /dev/null || sudo apt-get install -y -q p7zip-full > /dev/null
-          gh release download build-assets -p 'Debug*Menu*Restoration.7z' -O 'tmp/Debug Menu Restoration.7z' || echo "no build-assets release, no debug menu"
       - name: package
         env:
           RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
@@ -79,11 +70,6 @@ jobs:
         with:
           path: build/win-deps/prefix
           key: win-deps-${{ hashFiles('tools/win_deps.sh') }}
-      - name: debug menu assets
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release download build-assets -p 'Debug*Menu*Restoration.7z' -O 'tmp/Debug Menu Restoration.7z' || echo "no build-assets release, no debug menu"
       - name: build and package
         env:
           RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}

@@ -1,8 +1,8 @@
 #pragma once
 
 // The developers' debug menu, restored the way the shadPS4 community patch
-// "Restore Debug Menu" (Whitehawkx, auser1337; Bloodborne 1.09) does it, as a
-// load-time option (host setting `debug_menu`, next run).
+// "Restore Debug Menu" (Whitehawkx, auser1337; Bloodborne 1.09) does it, when
+// the Debug Menu plugin (plugins/debug_menu) is on - read once, at start.
 //
 // The shipped game keeps the debug system and its menu and leaves them off:
 //
@@ -20,8 +20,10 @@
 //     shaders, which are not on the disc, are not asked for.
 //
 // The fonts are not on the disc either: DbgFont14h.ccm and .tpf have to be in
-// dvdroot_ps4/adhoc/font (the dump or the asset overlay), and the game crashes
-// at boot without them, so the patch refuses when they are missing.
+// dvdroot_ps4/adhoc/font, and the game crashes at boot without them. The
+// plugin makes both (plugins/debug_menu/debug_font.hpp) into its file
+// overlay, where a copy in the player's mods folder wins; the patch still
+// refuses when they are missing.
 //
 // With the patch the menu opens on the touchpad's left side, which is also
 // Gestures, so the two opened together. The Debug Menu key (`) does not press
@@ -31,6 +33,8 @@
 
 struct ElfImage;
 
+// After the plugins' image phase (main.cpp): the plugin's font is written by
+// then.
 void debug_menu_install(ElfImage* image);
 
 // Whether this run's image has the menu patched in.

@@ -1144,22 +1144,26 @@ bool menu_assets_ensure() {
     const std::string app0 = hle_fs_app0_root(), data = hle_fs_data_root();
     if (app0.empty() || data.empty()) return false;
     const fs::path out = fs::path(data) / "bbhost" / "menu-assets";
-    const auto movie_src = read_file(fs::path(app0) / kMovie);
+    const auto movie_src = read_file(hle_fs_game_file(kMovie));
     if (!movie_src) {
         host_log("menu assets: the dump has no %s", kMovie);
         return false;
     }
-    // Every language folder with a menu bundle, in a stable order.
+    // Every language folder with a menu bundle, in a stable order: the game
+    // folder's and its update's (core/config.h), each bundle the update's
+    // when it has one.
     std::vector<std::pair<std::string, Bytes>> langs;  // relative path, source
     {
-        std::error_code ec;
-        std::vector<std::string> names;
-        for (const auto& e : fs::directory_iterator(fs::path(app0) / kMessageDir, ec))
-            if (e.is_directory(ec)) names.push_back(e.path().filename().string());
-        std::sort(names.begin(), names.end());
+        std::set<std::string> names;
+        for (const std::string root : {app0, std::string(hle_fs_update_root())}) {
+            if (root.empty()) continue;
+            std::error_code ec;
+            for (const auto& e : fs::directory_iterator(fs::path(root) / kMessageDir, ec))
+                if (e.is_directory(ec)) names.insert(e.path().filename().string());
+        }
         for (const std::string& n : names) {
             const std::string rel = std::string(kMessageDir) + "/" + n + "/" + kMessageFile;
-            if (auto b = read_file(fs::path(app0) / rel)) langs.emplace_back(rel, std::move(*b));
+            if (auto b = read_file(hle_fs_game_file(rel))) langs.emplace_back(rel, std::move(*b));
         }
     }
     if (langs.empty()) {
@@ -1176,7 +1180,7 @@ bool menu_assets_ensure() {
     }
     std::vector<std::pair<std::string, Bytes>> titles;
     for (const char* rel : kTitleMovies)
-        if (auto t = read_file(fs::path(app0) / rel)) {
+        if (auto t = read_file(hle_fs_game_file(rel))) {
             h = fnv1a(t->data(), t->size(), h);
             titles.emplace_back(rel, std::move(*t));
         }

@@ -975,8 +975,13 @@ void invalidate_rt_views(std::uint64_t base);
 void gpu_checkpoint(unsigned kind, std::uint64_t index);
 // Logs one recorded draw by index, if it is still in the ring.
 void describe_draw_record(std::uint64_t index);
+// A device fault's address against the tessellation LDS ring (render.cpp):
+// inside it (which region) or how far past or before it, and the recent
+// tessellated draw whose LDS holds it or ends just before it. "" before the
+// ring exists.
+std::string tess_lds_describe(std::uint64_t address, std::uint64_t precision);
 void surface_queue_writeback(std::uint64_t base);  // after a storage-image dispatch; guest memory is not written
-bool texture_dump_locked(std::uint64_t base, const char* path, std::uint32_t level = 0, std::uint32_t layer = 0);  // the surface at `base` (blitted to RGBA8) as a PPM
+bool texture_dump_locked(std::uint64_t base, const char* path, std::uint32_t level = 0, std::uint32_t layer = 0);  // the surface at `base` (blitted to RGBA8) as a PNG or PPM, by the path
 // One line on the sampled surface at `base` - its image, its source layout and
 // how it has been kept up to date - for the F12 dump's texture table; empty
 // when there is none.
