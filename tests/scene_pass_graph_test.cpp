@@ -23,5 +23,11 @@ int main() {
     graph.observe(ScenePassKind::Scaleform,false,none,ui);
     check(!graph.observe(ScenePassKind::Engine,true,mixed,display),"ambiguous multi-scene composite declines dispatch");
     graph.begin(103);check(!graph.scene_owned(20),"loading/new frame cannot inherit stale targets");
+    graph.begin(104);graph.observe(ScenePassKind::Scaleform,false,none,post);graph.seed(scene);
+    graph.observe(ScenePassKind::Yebis,true,scene,post,true);
+    check(graph.scene_owned(40),"opaque post overwrite drops earlier UI content in a reused target");
+    check(graph.observe(ScenePassKind::Scaleform,true,none,post)==40,"reused target resolves only its new scene content");
+    graph.begin(105);graph.seed(scene);graph.clear(20);
+    check(!graph.scene_owned(20),"explicit clear invalidates prior target provenance");
     std::printf("scene pass graph: %s\n",failures?"FAILED":"passed");return failures?1:0;
 }

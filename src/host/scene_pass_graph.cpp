@@ -11,7 +11,10 @@ bool ScenePassGraph::scene_owned(std::uint64_t target) const {
     const auto found=content_.find(target);
     return found!=content_.end() && found->second==Scene;
 }
-std::uint64_t ScenePassGraph::observe(ScenePassKind kind,bool full,std::span<const std::uint64_t> reads,std::span<const std::uint64_t> writes) {
+bool ScenePassGraph::ui_owned(std::uint64_t target) const {
+    const auto found=content_.find(target);return found!=content_.end() && (found->second&Ui);
+}
+std::uint64_t ScenePassGraph::observe(ScenePassKind kind,bool full,std::span<const std::uint64_t> reads,std::span<const std::uint64_t> writes,bool replaces) {
     unsigned inputs=0;std::uint64_t scene=0;bool ambiguous=false;
     for(auto r:reads) {
         const auto found=content_.find(r);if(found==content_.end()) continue;
@@ -28,6 +31,7 @@ std::uint64_t ScenePassGraph::observe(ScenePassKind kind,bool full,std::span<con
     if(resolve) boundary_=true;
     for(auto w:writes) if(w) {
         unsigned& contents=content_[w];
+        if(replaces) contents=0;
         // Attachment contents survive blending/incremental scene draws.
         if(kind==ScenePassKind::Scaleform) contents|=Ui;
         else contents|=inputs;

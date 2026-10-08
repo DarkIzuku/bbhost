@@ -62,7 +62,7 @@ struct TemporalScene {
     VkImage depth_image=VK_NULL_HANDLE;
     UpscaleExtent extent;SceneCamera camera;
     TemporalSample jitter;
-    bool camera_valid=false,primary_draw=false,graphics_dirty=false;
+    bool camera_valid=false,primary_draw=false,graphics_dirty=false,resolved=false;
     unsigned jittered=0,primary_count=0,full_count=0,draw_count=0,reads_count=0,scene_reads=0,ui_count=0;
 };
 TemporalScene g_temporal_scene;
@@ -1932,7 +1932,7 @@ bool scene_draw_prepare_locked(const GpuDraw& d,const DrawState& s,const KeyStag
         // top-left snapshot with an internal, synthetic address. Resolving
         // after that copy would leave the UI composite reading stale color.
         const auto base=binding.resolved ? tsharp_base(binding.w) : 0;
-        if(base && find_render_target(base)) reads.push_back(base);
+        if(base) reads.push_back(base);
     }
     for(const auto* color:s.color) if(color) writes.push_back(color->base);
     const auto kind=std::strcmp(d.gx_token_kind,"scaleform")==0 ? ScenePassKind::Scaleform :
@@ -1947,12 +1947,28 @@ bool scene_draw_prepare_locked(const GpuDraw& d,const DrawState& s,const KeyStag
         frame.depth_base=s.depth->base;frame.depth_image=s.depth->image;frame.graph.seed(writes);
         const std::uint64_t depth[]={s.depth->base};frame.graph.seed(depth);
     }
-    const auto boundary=frame.graph.observe(kind,full,reads,writes);
+    static std::uint64_t trace_frame=~0ull;
+    if(g_temporal_graph_audit && frame.camera_valid && trace_frame==~0ull) trace_frame=flip;
+    if(g_temporal_graph_audit && flip==trace_frame && (kind!=ScenePassKind::Engine || (!s.depth && writes.size()==1))) {
+        std::string trace;
+        for(auto r:reads) {char b[64];std::snprintf(b,sizeof(b)," 0x%llx:%s",static_cast<unsigned long long>(r),frame.graph.scene_owned(r)?"scene":frame.graph.ui_owned(r)?"UI":"unknown");trace+=b;}
+        host_log("temporal-path: frame=%llu kind=%s full=%u dest=0x%llx:%s reads=%s",static_cast<unsigned long long>(flip),d.gx_token_kind,full?1u:0u,
+            static_cast<unsigned long long>(s.color[0]?s.color[0]->base:0),s.color[0] && frame.graph.scene_owned(s.color[0]->base)?"scene":s.color[0] && frame.graph.ui_owned(s.color[0]->base)?"UI":"unknown",trace.c_str());
+    }
+    // Fullscreen post quads replace the active picture. Incremental
+    // geometry and blending must retain destination provenance.
+    const bool covers=full && s.scissor.offset.x<=0 && s.scissor.offset.y<=0 &&
+        s.scissor.offset.x+static_cast<std::int64_t>(s.scissor.extent.width)>=frame.extent.width &&
+        s.scissor.offset.y+static_cast<std::int64_t>(s.scissor.extent.height)>=frame.extent.height;
+    const bool replaces=covers && !s.depth && writes.size()==1 && s.color_mask[0]==15 && !(s.blend[0]&(1u<<30)) &&
+        (kind==ScenePassKind::Yebis || (d.gx_objects && d.gx_objects->geometry && d.gx_objects->count<=6));
+    const auto boundary=frame.graph.observe(kind,full,reads,writes,replaces);
     if(boundary) {
         auto* color=find_render_target(boundary);auto* depth=find_render_target(frame.depth_base);
         bool resolved=false;
         if(provider && !g_temporal_scene_failed && frame.camera_valid && frame.jittered && color && depth && depth->image==frame.depth_image) {
             resolved=scene_resolve_locked(*provider,frame.camera,flip,frame.extent,*depth,*color,frame.jitter);
+            frame.resolved=resolved;
             frame.graphics_dirty=true;
         }
         if(provider) {
@@ -2053,6 +2069,10 @@ std::unordered_map<std::uint64_t, gcn::TranslateResult> g_paths_cache;  // never
 // again there (~15% of the command processor in the frames that ran long
 // while new areas streamed in).
 std::mutex g_paths_ready_mu;
+bool scene_tracking_locked() {return g_temporal_scene.flip!=~0ull;}
+void scene_dispatch_observe_locked(std::span<const std::uint64_t> reads,std::span<const std::uint64_t> writes) {
+    if(g_temporal_scene.flip!=~0ull) g_temporal_scene.graph.observe(ScenePassKind::Engine,false,reads,writes);
+}
 std::unordered_map<std::uint64_t, gcn::TranslateResult> g_paths_ready;
 std::atomic<std::uint64_t> g_paths_taken{0}, g_paths_translated{0};
 namespace {
@@ -6382,6 +6402,7 @@ std::size_t rt_bytes_per_pixel(const RtImage& r) { return format_bytes_per_pixel
 // is the tiled allocation, often a few rows larger (or a 1024² slice) than
 // width*height*bpp of the unpadded image, so there is no size check here.
 void clear_image_locked(RtImage& r, const float rgba[4], std::uint32_t first_layer = 0, std::uint32_t layer_count = ~0u) {
+    if(scene_tracking_locked() && first_layer==0 && layer_count>=r.layers) g_temporal_scene.graph.clear(r.base);
     if (r.base == g_order_target && hle_video_flip_count() >= 2000 && g_order_logs.load() < 120) {
         g_order_logs.fetch_add(1);
         host_log("order: CLEAR 0x%llx rgba=%.3f %.3f %.3f %.3f", static_cast<unsigned long long>(r.base), rgba[0], rgba[1], rgba[2],
@@ -14575,6 +14596,11 @@ void host_gpu_temporal_frame_end() {
     static const bool requested=[] {const char* e=std::getenv("BBHOST_DLSS_SCENE");return e && std::strcmp(e,"1")==0;}();
     if(!gpu::g_temporal_graph_audit && !requested) return;
     std::lock_guard<GpuMutex> lock(gpu::g.mu);
+    const auto& frame=gpu::g_temporal_scene;
+    if(requested && !gpu::g_temporal_scene_failed && frame.flip==gpu::g_temporal_sequence && frame.jittered && !frame.resolved) {
+        gpu::g_temporal_scene_failed=true;
+        host_log("DLSS: scene ended without a verified temporal resolve; scene jitter disabled, native rendering retained");
+    }
     ++gpu::g_temporal_sequence;
 }
 

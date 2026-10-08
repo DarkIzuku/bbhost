@@ -17,10 +17,12 @@ public:
     void begin(std::uint64_t frame);
     void seed(std::span<const std::uint64_t> scene_targets);
     bool scene_owned(std::uint64_t target) const;
+    bool ui_owned(std::uint64_t target) const;
+    void clear(std::uint64_t target) {content_.erase(target);}
     // Returns the scene image to resolve BEFORE this draw. For Scaleform it
     // is its destination; for a native UI composite it is the unique scene
     // input. Downscaled UI preparations and ambiguous composites are declined.
     std::uint64_t observe(ScenePassKind,bool full_viewport,
-        std::span<const std::uint64_t> reads,std::span<const std::uint64_t> writes);
+        std::span<const std::uint64_t> reads,std::span<const std::uint64_t> writes,bool replaces_contents=false);
 };
 }

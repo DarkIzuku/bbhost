@@ -16,6 +16,7 @@
 // is tagged with its site (gpu_memtrack.cpp), so a VRAM report can say which
 // allocation holds what - the question when several instances share a GPU.
 #include <string>
+#include <span>
 VkResult bb_alloc_memory(VkDevice device, const VkMemoryAllocateInfo* info, const VkAllocationCallbacks* cb,
                          VkDeviceMemory* out, const char* file, int line);
 void bb_free_memory(VkDevice device, VkDeviceMemory memory, const VkAllocationCallbacks* cb);
@@ -1071,6 +1072,8 @@ void textures_retired(int slot);                    // that submission completed
 
 // render.cpp
 void render_end_pass_locked();   // ends dynamic rendering if active (before dispatch/flush)
+void scene_dispatch_observe_locked(std::span<const std::uint64_t> reads,std::span<const std::uint64_t> writes);
+bool scene_tracking_locked();
 void render_report();
 bool render_blit_display_locked(VkCommandBuffer cmd, std::uint64_t display_va, VkImage dst, VkRect2D area, VkExtent2D src,
                                 std::uint32_t src_x = 0, std::uint32_t src_y = 0, VkImageView dst_view = VK_NULL_HANDLE);

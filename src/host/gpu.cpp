@@ -4542,6 +4542,8 @@ bool host_gpu_dispatch(const GpuDispatch& d) {
         host_log("gpu: dispatch %s has %u store(s) through a V# not traced to user data", pl.name.c_str(), pl.meta.untraced_stores);
     }
     bool any_storage = false;
+    std::vector<std::uint64_t> scene_reads,scene_writes;
+    const bool temporal_scene=scene_tracking_locked();
     for (const gcn::ImageBinding& b : pl.meta.images) any_storage |= b.storage;
     for (std::size_t k = 0; k < pl.meta.images.size(); ++k) {
         const gcn::ImageBinding& b = pl.meta.images[k];
@@ -4549,6 +4551,7 @@ bool host_gpu_dispatch(const GpuDispatch& d) {
         // loaded from memory too.
         if (k >= stage_images.images.size() || !stage_images.images[k].resolved) continue;
         const std::uint32_t* tw = stage_images.images[k].w;
+        if(temporal_scene) (b.storage ? scene_writes : scene_reads).push_back(tsharp_base(tw));
         if (any_storage) {
             tex_event(tsharp_base(tw), texture_src_bytes_locked(tsharp_base(tw)), "dispatch %s %ux%ux%u %s 0x%llx dfmt %u nfmt %u %ux%u type %u tiling %u levels %u..%u%s", pl.name.c_str(),
                       d.dim[0], d.dim[1], d.dim[2], b.storage ? "WRITES" : "reads", static_cast<unsigned long long>(tsharp_base(tw)),
@@ -4564,6 +4567,7 @@ bool host_gpu_dispatch(const GpuDispatch& d) {
     vkCmdPipelineBarrier(g_cmd(), VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &mb, 0,
                          nullptr, 0, nullptr);
     g.dispatches.fetch_add(1);
+    scene_dispatch_observe_locked(scene_reads,scene_writes);
     return true;
 }
 
