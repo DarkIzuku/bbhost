@@ -157,6 +157,42 @@ static class Program
         Check(TomlSettings.Read(profile)["online.offline"] == "true", "website link cannot enable incompatible game protocol");
         Check(ServerLinks.ShadNetRegistration("https://[2001:db8::1]:31315").AbsoluteUri == "https://[2001:db8::1]:31316/register", "website link preserves IPv6 and explicit TLS scheme");
         Throws(() => ServerLinks.ShadNetRegistration("https://user:password@example.com"), "website helper rejects embedded credentials");
+        var custom = ServerProfile.Build(false, "http://192.0.2.15:31315", "https://api.example.com/bbhost/", "https://auth.example.com/",
+                                         "https://accounts.example.com/register?from=launcher", "Fixture", "9308", "192.0.2.100", "stun.example.com:3479", true, true);
+        Check(custom.Values["online.np_server"] == "\"https://api.example.com/bbhost\"" && custom.Values["online.auth_server"] == "\"https://auth.example.com\"",
+              "independent native account and matchmaking bases preserve proxy path and custom ports");
+        var direct = ServerProfile.Build(false, "http://192.0.2.15:31315", "", "", "", "Fixture", "9307", "", "off", false, false);
+        Check(direct.Values["online.np_server"] == "\"http://192.0.2.15:31315\"", "native API fallback cannot append a second port");
+        var differentAuth = ServerProfile.Build(false, "http://192.0.2.15:31315", "https://api.example.com/bbhost/", "https://other-auth.example.com",
+                                               "", "Fixture", "9308", "", "", true, true);
+        Check(custom.Name != differentAuth.Name, "different account services cannot reuse a native account profile");
+        Throws(() => ServerProfile.Build(false, "http://user:password@example.com", "", "", "", "Fixture", "9307", "", "", true, true), "server profile rejects URL credentials");
+        Throws(() => ServerProfile.Build(false, "http://example.com", "", "", "", "Fixture", "65536", "", "", true, true), "server profile rejects invalid P2P port");
+        Throws(() => ServerProfile.Build(false, "http://example.com", "", "", "", "Fixture", "9307", "", "stun.example.com:65536", true, true), "server profile rejects invalid STUN port");
+        string overrideFile = Path.Combine(root, "fixture-host-overrides.json");
+        File.WriteAllText(overrideFile, "{\"https://ss4.scej-network.jp:20443\":\"http://192.0.2.15:31315\"}");
+        string originalOverride = TomlSettings.Fingerprint(overrideFile);
+        Call(window, "ImportHostOverride", overrideFile);
+        Check(Find<TextBox>(window, "CustomServerBox").Text == "http://192.0.2.15:31315" && Find<TextBox>(window, "AccountPageBox").Text == "http://192.0.2.15:31316/register", "host override imports WebAPI and integrated account page");
+        Check(TomlSettings.Fingerprint(overrideFile) == originalOverride && TomlSettings.Read(profile)["online.offline"] == "true", "host override import is read only and does not enable online");
+        Find<ComboBox>(window, "ServerCombo").SelectedIndex = 1;
+        Find<TextBox>(window, "NativeApiBox").Text = "https://api.example.com/bbhost";
+        Find<TextBox>(window, "AuthServerBox").Text = "https://auth.example.com";
+        Find<TextBox>(window, "OnlineIdBox").Text = "Fixture";
+        Find<TextBox>(window, "P2pPortBox").Text = "9308";
+        Find<TextBox>(window, "P2pAddressBox").Text = "192.0.2.100";
+        Find<TextBox>(window, "StunServerBox").Text = "stun.example.com:3479";
+        Call(window, "ApplyServer_Click", window, new RoutedEventArgs());
+        Until(() => Find<TextBlock>(window, "FooterMessage").Text.StartsWith("Perfil de servidor aplicado"), "native server profile applied and reloaded");
+        var selectedProfile = Path.Combine(root, "config", "profiles", TomlSettings.Read(config)["launcher.server_profile"] + ".toml");
+        var network = TomlSettings.Read(selectedProfile);
+        Check(network["online.np_server"] == "https://api.example.com/bbhost" && network["online.auth_server"] == "https://auth.example.com" && network["online.host"] == "192.0.2.15:31315", "WPF applies separate endpoints to native TOML");
+        Check(network["online.online_id"] == "Fixture" && network["online.p2p_port"] == "9308" && network["online.p2p_addr"] == "192.0.2.100" && network["online.stun_server"] == "stun.example.com:3479", "WPF persists native identity and P2P/STUN settings");
+        Check(Find<TextBox>(window, "NativeApiBox").Text == network["online.np_server"] && Find<TextBox>(window, "P2pAddressBox").Text == network["online.p2p_addr"], "network settings round trip through reload");
+        Find<ComboBox>(window, "ServerCombo").SelectedIndex = 0;
+        Call(window, "ApplyServer_Click", window, new RoutedEventArgs());
+        Until(() => TomlSettings.Read(config)["launcher.server_kind"] == "Offline" && Find<Button>(window, "PlayButton").IsEnabled, "return to offline profile");
+        Check(TomlSettings.Read(profile)["online.offline"] == "true", "offline profile still applies after custom server configuration");
         Render(window, Path.Combine(preview, "launcher-home.png"), 1500, 920);
         var nav = Find<StackPanel>(window, "Navigation");
         foreach (string page in new[] { "Game", "Graphics", "Online", "Upscaling" }) {

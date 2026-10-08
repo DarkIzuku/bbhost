@@ -1,8 +1,6 @@
 using Microsoft.Win32;
 using System.Diagnostics;
 using System.IO;
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
@@ -79,6 +77,14 @@ public partial class MainWindow : Window
         string server = active.GetValueOrDefault("online.host", main.GetValueOrDefault("online.host", ""));
         CustomServerBox.Text = server.Contains("thehuntersdream.com", StringComparison.OrdinalIgnoreCase) || server.Length == 0 ? "" : active.GetValueOrDefault("online.scheme", "https") + "://" + server;
         AccountPageBox.Text = active.GetValueOrDefault("online.account_page", "");
+        NativeApiBox.Text = active.GetValueOrDefault("online.np_server", main.GetValueOrDefault("online.np_server", ""));
+        AuthServerBox.Text = active.GetValueOrDefault("online.auth_server", main.GetValueOrDefault("online.auth_server", ""));
+        if (!active.ContainsKey("online.auth_server") && AuthServerBox.Text.Contains("thehuntersdream.com", StringComparison.OrdinalIgnoreCase)) AuthServerBox.Text = "";
+        OnlineIdBox.Text = active.GetValueOrDefault("online.online_id", main.GetValueOrDefault("online.online_id", "Hunter"));
+        P2pAddressBox.Text = active.GetValueOrDefault("online.p2p_addr", main.GetValueOrDefault("online.p2p_addr", ""));
+        StunServerBox.Text = active.GetValueOrDefault("online.stun_server", main.GetValueOrDefault("online.stun_server", ""));
+        VerifyTlsCheck.IsChecked = active.GetValueOrDefault("online.verify_tls", main.GetValueOrDefault("online.verify_tls", "true")) == "true";
+        RequireAccountCheck.IsChecked = active.GetValueOrDefault("online.require_account", main.GetValueOrDefault("online.require_account", "true")) == "true";
         DetailedLogsCheck.IsChecked = main.GetValueOrDefault("launcher.detailed_logs", "false") == "true";
         DeveloperConsoleCheck.IsChecked = main.GetValueOrDefault("launcher.developer_console", "false") == "true";
         string language = main.GetValueOrDefault("system.language", "1");
@@ -249,24 +255,33 @@ public partial class MainWindow : Window
     {
         if (state is null || busy || session.Running) return;
         try {
-            SaveSettings();
-            if (!int.TryParse(P2pPortBox.Text, out int port) || port < 1 || port > 65535) throw new IOException("Puerto P2P inválido.");
             string kind = ((ComboBoxItem)ServerCombo.SelectedItem).Content.ToString()!;
-            string profile = ""; var online = new Dictionary<string, string> { ["online.p2p_port"] = port.ToString() };
-            if (kind == "Offline") { profile = "bloodborne-offline"; online["online.offline"] = "true"; }
-            else {
-                var uri = new Uri(CustomServerBox.Text.Trim());
-                if ((uri.Scheme != "http" && uri.Scheme != "https") || uri.UserInfo.Length > 0 || uri.AbsolutePath != "/" || uri.Query.Length > 0 || uri.Fragment.Length > 0) throw new IOException("Introduce una URL de servidor http/https sin credenciales ni ruta.");
-                online["online.offline"] = "false"; online["online.host"] = TomlSettings.Quote(uri.Authority); online["online.scheme"] = TomlSettings.Quote(uri.Scheme);
-                online["online.verify_tls"] = "true"; online["online.require_account"] = "true"; online["online.auth_server"] = TomlSettings.Quote(uri.GetLeftPart(UriPartial.Authority));
-                profile = "bloodborne-custom-" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(uri.GetLeftPart(UriPartial.Authority))))[..16];
-            }
-            host.Profile = profile.Length == 0 ? "" : Path.Combine(Path.GetDirectoryName(state.ConfigFile)!, "profiles", profile + ".toml");
-            string file = host.Profile.Length == 0 ? state.ConfigFile : host.Profile;
-            TomlSettings.Write(file, online);
-            TomlSettings.Write(state.ConfigFile, new Dictionary<string, string> { ["launcher.server_kind"] = TomlSettings.Quote(kind), ["launcher.server_profile"] = TomlSettings.Quote(profile) });
-            SetBusy(true); await Reload(); FooterMessage.Text = "Perfil de servidor aplicado";
+            var selected = ServerProfile.Build(kind == "Offline", CustomServerBox.Text, NativeApiBox.Text, AuthServerBox.Text,
+                                              AccountPageBox.Text, OnlineIdBox.Text, P2pPortBox.Text, P2pAddressBox.Text,
+                                              StunServerBox.Text, VerifyTlsCheck.IsChecked == true, RequireAccountCheck.IsChecked == true);
+            SaveSettings();
+            string file = Path.Combine(Path.GetDirectoryName(state.ConfigFile)!, "profiles", selected.Name + ".toml");
+            var destinationSnapshot = fingerprints.GetValueOrDefault(file, TomlSettings.Fingerprint(file));
+            TomlSettings.Write(file, selected.Values, destinationSnapshot);
+            TomlSettings.Write(state.ConfigFile, new Dictionary<string, string> { ["launcher.server_kind"] = TomlSettings.Quote(kind), ["launcher.server_profile"] = TomlSettings.Quote(selected.Name) }, fingerprints[state.ConfigFile]);
+            host.Profile = file;
+            SetBusy(true); await Reload(); FooterMessage.Text = "Perfil de servidor aplicado; la conexión se comprueba al iniciar el juego";
         } catch (Exception ex) { Error(ex); } finally { SetBusy(false); }
+    }
+    void ImportHostOverride(string file)
+    {
+        CustomServerBox.Text = ServerProfile.ReadHostOverride(file);
+        NativeApiBox.Text = ""; AuthServerBox.Text = "";
+        AccountPageBox.Text = ServerLinks.ShadNetRegistration(CustomServerBox.Text).AbsoluteUri;
+        FooterMessage.Text = "WebAPI y página de cuentas importadas. Revisa y aplica el perfil; el archivo original se conserva.";
+    }
+    void ImportHostOverride_Click(object sender, RoutedEventArgs e)
+    {
+        if (busy || session.Running) return;
+        var picker = new OpenFileDialog { Title = "Importar redirección WebAPI de Bloodborne", Filter = "Host overrides (*.json)|*.json", FileName = "host_overrides.json",
+                                         InitialDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "shadPS4") };
+        if (picker.ShowDialog(this) != true) return;
+        try { ImportHostOverride(picker.FileName); } catch (Exception ex) { Error(ex); }
     }
     async Task AccountAction(string action)
     {

@@ -81,3 +81,34 @@ still requires a gateway compatibility implementation or a client update.
 Required validation: account lifecycle, two clients, room create/join/leave,
 summons/invasions, WebAPI, event replay/ack, STUN, NAT/relay and disconnects.
 No live deployment or multiplayer compatibility was tested in this stage.
+
+## Launcher connection controls
+
+The WPF Online page now exposes native WebAPI, `online.online_id`, P2P UDP
+port and optional advertised IPv4/STUN endpoint. Its expandable network
+section separates `online.np_server` (bbhost account/matching API) and
+`online.auth_server` (optional separate account service), and exposes native
+certificate validation and account-required switches. Native P2P, signaling,
+NAT traversal and relay implementations are unchanged. There is no cosmetic
+UPnP switch without a working native implementation, and no shadPS4 network
+stack is imported.
+
+Applying a custom server writes native TOML and reloads it. Account profiles
+are named from the WebAPI, matching and auth bases together, so changing the
+account service cannot silently reuse a different server's stored token.
+Explicit API bases also avoid native fallback appending `:18671` to an
+authority that already includes a custom WebAPI port. Applying a profile is
+reported as configuration, not a successful account/server connection.
+
+The import button reads the Bloodborne `host_overrides.json` mapping for
+`https://ss4.scej-network.jp:20443`, validates its http/https target, fills the
+WebAPI address and derives the editable account-page link. It never modifies
+the JSON or activates online automatically. Real user addresses/credentials
+are not included in the repository or default settings.
+
+This import does not implement the distinct shadNet TCP login endpoint shown
+in shadPS4's settings. The browser manages web passwords; bbhost retains its
+native linked-account/recovery-code flow for compatible servers. The game
+compatibility adapter described above is still required for shadNet.
+Read-only local checks of the supplied WebAPI status and registration URL
+received connection-refused errors; no account credentials were sent.
